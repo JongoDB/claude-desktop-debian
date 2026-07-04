@@ -73,8 +73,9 @@ teardown() {
 	run_cmd() { :; }
 	chown() { return 0; }
 	id() { printf '1042'; }
-	env() { shift; while [[ $1 == *=* ]]; do shift; done; :; }
-	systemctl() { :; }
+	# enabling the unit is exercised by appliance-common's
+	# user_systemctl tests; here we only assert the unit is written.
+	user_systemctl() { :; }
 	mkdir -p "$TEST_TMP/home"
 	storage_install_unit alice drive 10G
 	local unit

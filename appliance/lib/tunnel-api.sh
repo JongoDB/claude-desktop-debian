@@ -330,6 +330,22 @@ tunnel_api_provision() {
 	cf_access_ensure_app "$account" "$hostname" "$allow_csv" \
 		|| return 1
 
+	# Cloudflare Universal SSL covers the apex and ONE wildcard level
+	# (*.zone). Per-member hostnames are NAME.$hostname; when $hostname
+	# is itself below the apex, those are two levels deep and have no
+	# cert (TLS handshake failure), even though the single-user
+	# $hostname works. Warn so multi-member deploys provision an
+	# advanced cert for *.$hostname first.
+	if [[ ${hostname%."$zone_name"} != "$zone_name" \
+		&& $hostname != *.*."$zone_name" ]]; then
+		log_warn "multi-member note: member hostnames" \
+			"(NAME.$hostname) sit two levels below $zone_name and" \
+			"are NOT covered by Cloudflare Universal SSL. Before" \
+			"using member.sh, provision an advanced certificate" \
+			"for *.$hostname (or host the appliance at the zone" \
+			"apex)."
+	fi
+
 	tunnel_api_write_conf "$tunnel" "$account" "$zone_id" \
 		"$zone_name" "$token_file" "$allow_csv" || return 1
 

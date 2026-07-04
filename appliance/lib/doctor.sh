@@ -122,13 +122,32 @@ apl_check_tunnel_service() {
 
 # --- Session layer -----------------------------------------------------
 
-# $1 = user
+# $1 = user, $2 = optional `ss -Hltn` listing (for tests). A config
+# file is necessary but NOT sufficient — the session only works if the
+# server is actually listening, so a present config with no listener is
+# a FAIL, not a PASS (the cloud-init headless-bus bug shipped exactly
+# that false-green).
 apl_check_session_layer() {
 	local user="$1"
+	local ss_output="${2-$(command -v ss > /dev/null 2>&1 \
+		&& ss -Hltn 2> /dev/null)}"
 	local home
 	home=$(getent passwd "$user" | cut -d: -f6)
+
 	if [[ -f $home/.vnc/kasmvnc.yaml ]]; then
 		_apl_pass "kasmVNC config present for $user"
+		# The port lives in the config; default to the base port.
+		local port
+		port=$(grep -oE 'websocket_port:[[:space:]]*[0-9]+' \
+			"$home/.vnc/kasmvnc.yaml" | grep -oE '[0-9]+' | head -1)
+		port="${port:-8443}"
+		if grep -qE "127\.0\.0\.1:$port|\[::1\]:$port|\*:$port" \
+			<<< "$ss_output"; then
+			_apl_pass "kasmVNC listening on $port"
+		else
+			_apl_fail "kasmVNC config present but nothing is" \
+				"listening on $port (service failed to start?)"
+		fi
 	elif [[ -f /etc/xrdp/xrdp.ini ]]; then
 		_apl_pass 'xrdp profile detected'
 	else

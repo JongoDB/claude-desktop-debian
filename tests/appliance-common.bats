@@ -185,3 +185,56 @@ teardown() {
 	run user_home ghost
 	[[ $status -ne 0 ]]
 }
+
+# =============================================================================
+# user_systemctl (headless-safe systemctl --user)
+# =============================================================================
+
+@test "user_systemctl: dry-run prints plan, touches nothing" {
+	appliance_dry_run=1
+	id() { printf '1042'; }
+	run user_systemctl alice enable --now kasmvnc.service
+	[[ $status -eq 0 ]]
+	[[ $output == *'DRY-RUN: user_systemctl alice'* ]]
+	[[ $output == *'enable --now kasmvnc.service'* ]]
+}
+
+@test "user_systemctl: enables linger, starts manager, sets bus env" {
+	id() { printf '1042'; }
+	export APPLIANCE_RUNTIME_DIR="$TEST_TMP/run1042"
+	mkdir -p "$APPLIANCE_RUNTIME_DIR"
+	# no bus yet; "starting" the manager creates it
+	loginctl() { printf 'loginctl %s\n' "$*" >> "$TEST_TMP/calls"; }
+	systemctl() {
+		printf 'systemctl %s\n' "$*" >> "$TEST_TMP/calls"
+		# emulate the manager creating its bus socket (a real unix
+		# socket, since the code correctly checks with -S)
+		python3 -c 'import socket,sys
+s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' \
+			"$APPLIANCE_RUNTIME_DIR/bus"
+	}
+	runuser() {
+		# capture the env passed to the --user invocation
+		shift 3  # -u alice --
+		printf 'RUNUSER: %s\n' "$*" >> "$TEST_TMP/calls"
+	}
+	run user_systemctl alice enable --now kasmvnc.service
+	[[ $status -eq 0 ]]
+	grep -q 'loginctl enable-linger alice' "$TEST_TMP/calls"
+	grep -q 'systemctl start user@1042.service' "$TEST_TMP/calls"
+	grep -q 'DBUS_SESSION_BUS_ADDRESS=unix:path=.*/bus' "$TEST_TMP/calls"
+	grep -q 'systemctl --user enable --now kasmvnc.service' \
+		"$TEST_TMP/calls"
+}
+
+@test "user_systemctl: fails cleanly if the bus never appears" {
+	id() { printf '1042'; }
+	export APPLIANCE_RUNTIME_DIR="$TEST_TMP/run-nobus"
+	loginctl() { :; }
+	systemctl() { :; }   # never creates the bus
+	# make the wait fast — override sleep
+	sleep() { :; }
+	run user_systemctl alice enable --now kasmvnc.service
+	[[ $status -ne 0 ]]
+	[[ $output == *'bus never appeared'* ]]
+}

@@ -100,9 +100,9 @@ profile_kasmvnc_write_service() {
 	if [[ ${appliance_dry_run:-0} -ne 1 ]]; then
 		chown "$user:$user" "$unit_dir/kasmvnc.service"
 	fi
-	run_cmd loginctl enable-linger "$user" || return 1
-	run_as_user "$user" env XDG_RUNTIME_DIR="/run/user/$(id -u "$user")" \
-		systemctl --user enable kasmvnc.service
+	# enable --now so the session starts during setup (not just at the
+	# next boot), via the headless-safe user-manager helper.
+	user_systemctl "$user" enable --now kasmvnc.service
 }
 
 kasmvnc_unit() {

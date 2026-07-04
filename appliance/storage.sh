@@ -118,10 +118,7 @@ storage_install_unit() {
 	if [[ ${appliance_dry_run:-0} -ne 1 ]]; then
 		chown "$user:$user" "$unit"
 	fi
-	run_cmd loginctl enable-linger "$user" || return 1
-	run_as_user "$user" \
-		env XDG_RUNTIME_DIR="/run/user/$(id -u "$user")" \
-		systemctl --user enable --now "rclone-$name.service"
+	user_systemctl "$user" enable --now "rclone-$name.service"
 }
 
 # Prompt for the OAuth token when interactive and no file was given.
@@ -190,9 +187,7 @@ cmd_remove() {
 	local home
 	home=$(user_home "$user") || return 1
 
-	run_as_user "$user" \
-		env XDG_RUNTIME_DIR="/run/user/$(id -u "$user")" \
-		systemctl --user disable --now "rclone-$name.service"
+	user_systemctl "$user" disable --now "rclone-$name.service"
 	run_cmd rm -f \
 		"$home/.config/systemd/user/rclone-$name.service"
 	run_as_user "$user" rclone config delete "$name"

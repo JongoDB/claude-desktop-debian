@@ -159,3 +159,49 @@ run_as_user() {
 	shift
 	run_cmd runuser -u "$user" -- "$@"
 }
+
+# Run `systemctl --user <args>` for a user in a HEADLESS context.
+#
+# In cloud-init / a root shell there is no login session for the target
+# user, so a bare `systemctl --user` dies with
+#   Failed to connect to bus: No such file or directory
+# because the user's systemd manager (and its D-Bus socket under
+# /run/user/<uid>) does not exist yet. enable-linger alone does not
+# start the manager synchronously. This helper enables linger, starts
+# user@<uid>.service, waits for the runtime bus socket, then invokes
+# systemctl --user with XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS
+# set explicitly.
+#
+# Usage: user_systemctl <user> enable --now foo.service
+user_systemctl() {
+	local user="$1"
+	shift
+	local uid runtime
+	uid=$(id -u "$user") || return 1
+	runtime="${APPLIANCE_RUNTIME_DIR:-/run/user/$uid}"
+
+	if [[ ${appliance_dry_run:-0} -eq 1 ]]; then
+		printf 'DRY-RUN: user_systemctl %s: systemctl --user %s\n' \
+			"$user" "$*"
+		return 0
+	fi
+
+	loginctl enable-linger "$user" || return 1
+	if [[ ! -S $runtime/bus ]]; then
+		systemctl start "user@$uid.service" || return 1
+		local waited=0
+		while [[ ! -S $runtime/bus && $waited -lt 30 ]]; do
+			sleep 1
+			waited=$((waited + 1))
+		done
+	fi
+	if [[ ! -S $runtime/bus ]]; then
+		log_err "user systemd bus never appeared for $user" \
+			"($runtime/bus)"
+		return 1
+	fi
+	runuser -u "$user" -- env \
+		XDG_RUNTIME_DIR="$runtime" \
+		DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
+		systemctl --user "$@"
+}
