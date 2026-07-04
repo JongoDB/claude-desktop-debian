@@ -163,14 +163,16 @@ EOF
 	[[ $output != *'FAIL'* ]]
 }
 
-@test "keyring: dir with only an empty keyring file fails" {
+@test "keyring: empty keyring pre-sign-in is a WARN, not a fail" {
 	getent() {
 		printf 'alice:x:1000:1000::%s:/bin/bash\n' "$TEST_TMP/home"
 	}
 	mkdir -p "$TEST_TMP/home/.local/share/keyrings"
 	touch "$TEST_TMP/home/.local/share/keyrings/login.keyring"
+	run apl_check_keyring alice
+	[[ $output == *'WARN'* ]]
 	apl_check_keyring alice
-	[[ $_apl_failures -eq 1 ]]
+	[[ $_apl_failures -eq 0 ]]
 }
 
 @test "keyring: non-empty keyring passes" {

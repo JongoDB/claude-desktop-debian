@@ -155,21 +155,27 @@ apl_check_session_layer() {
 	fi
 }
 
-# $1 = user. Non-empty check per the false-green lesson (#692).
+# $1 = user. On a freshly-provisioned appliance the keyring only
+# populates at the member's FIRST Claude sign-in (a documented
+# post-provision step), so an absent-or-empty keyring is a WARN, not a
+# FAIL — provisioning succeeded, the member just hasn't signed in yet.
+# (The #692 empty-store-is-a-false-green concern is about the app's own
+# --doctor on a used install, handled separately in scripts/doctor.sh.)
 apl_check_keyring() {
 	local user="$1"
 	local home
 	home=$(getent passwd "$user" | cut -d: -f6)
 	local ring_dir="$home/.local/share/keyrings"
 	if [[ ! -d $ring_dir ]]; then
-		_apl_warn "no keyring dir for $user yet (first login creates it)"
+		_apl_warn "no keyring for $user yet (created at first sign-in)"
 		return
 	fi
 	if find "$ring_dir" -name '*.keyring' -size +0c 2> /dev/null \
 		| grep -q .; then
 		_apl_pass "keyring present and non-empty for $user"
 	else
-		_apl_fail "keyring dir exists but no non-empty keyring for $user"
+		_apl_warn "keyring not yet populated for $user" \
+			"(completes at the member's first Claude sign-in)"
 	fi
 }
 
