@@ -1,0 +1,196 @@
+# shellcheck shell=bash
+#===============================================================================
+# kasmVNC profile — default session layer
+#
+# Serves the member's XFCE session as an HTTPS-in-browser desktop on a
+# localhost port; cloudflared carries it to the edge. TLS is disabled
+# locally on purpose: it terminates at the tunnel, and raw ports never
+# leave loopback (the doctor fails loudly if one does).
+#
+# Sourced by appliance/setup.sh and appliance/member.sh.
+#===============================================================================
+
+# First member's websocket port; member.sh allocates upward from here.
+appliance_kasm_base_port=8443
+
+kasmvnc_release_base='https://github.com/kasmtech/KasmVNC/releases/download'
+kasmvnc_version="${APPLIANCE_KASMVNC_VERSION:-1.3.3}"
+
+# Compose the release .deb URL for this distro/arch.
+kasmvnc_deb_url() {
+	local codename arch
+	codename=$(appliance_distro_codename)
+	arch=$(appliance_arch)
+	if [[ -z $codename ]]; then
+		log_err 'cannot determine distro codename for kasmVNC deb'
+		return 1
+	fi
+	printf '%s/v%s/kasmvncserver_%s_%s_%s.deb' \
+		"$kasmvnc_release_base" "$kasmvnc_version" \
+		"$codename" "$kasmvnc_version" "$arch"
+}
+
+profile_kasmvnc_install_packages() {
+	local url tmp_deb
+	url=$(kasmvnc_deb_url) || return 1
+	tmp_deb="${TMPDIR:-/tmp}/kasmvncserver.deb"
+
+	if command -v kasmvncserver > /dev/null 2>&1 \
+		|| dpkg -s kasmvncserver > /dev/null 2>&1; then
+		log_info 'kasmvncserver already installed'
+	else
+		run_cmd curl -fsSLo "$tmp_deb" "$url" || return 1
+		pkg_install "$tmp_deb" || return 1
+		run_cmd rm -f "$tmp_deb"
+	fi
+	pkg_install ssl-cert || return 1
+}
+
+# Per-user kasmVNC config: loopback bind, tunnel-terminated TLS.
+# $1 = user, $2 = websocket port
+profile_kasmvnc_write_config() {
+	local user="$1"
+	local port="$2"
+	local home
+	home=$(user_home "$user") || return 1
+
+	run_as_user "$user" mkdir -p "$home/.vnc" || return 1
+	kasmvnc_yaml "$port" \
+		| write_file "$home/.vnc/kasmvnc.yaml" || return 1
+	if [[ ${appliance_dry_run:-0} -ne 1 ]]; then
+		chown "$user:$user" "$home/.vnc/kasmvnc.yaml"
+	fi
+	kasmvnc_xstartup | write_file "$home/.vnc/xstartup" 755 || return 1
+	if [[ ${appliance_dry_run:-0} -ne 1 ]]; then
+		chown "$user:$user" "$home/.vnc/xstartup"
+	fi
+}
+
+kasmvnc_yaml() {
+	local port="$1"
+	cat << EOF
+network:
+  interface: 127.0.0.1
+  websocket_port: ${port}
+  ssl:
+    require_ssl: false
+EOF
+}
+
+kasmvnc_xstartup() {
+	cat << 'EOF'
+#!/bin/sh
+exec startxfce4
+EOF
+}
+
+# systemd user service so the session survives logout and starts at
+# boot (paired with loginctl enable-linger).
+# $1 = user
+profile_kasmvnc_write_service() {
+	local user="$1"
+	local home
+	home=$(user_home "$user") || return 1
+	local unit_dir="$home/.config/systemd/user"
+
+	run_as_user "$user" mkdir -p "$unit_dir" || return 1
+	kasmvnc_unit | write_file "$unit_dir/kasmvnc.service" || return 1
+	if [[ ${appliance_dry_run:-0} -ne 1 ]]; then
+		chown "$user:$user" "$unit_dir/kasmvnc.service"
+	fi
+	run_cmd loginctl enable-linger "$user" || return 1
+	run_as_user "$user" env XDG_RUNTIME_DIR="/run/user/$(id -u "$user")" \
+		systemctl --user enable kasmvnc.service
+}
+
+kasmvnc_unit() {
+	cat << 'EOF'
+[Unit]
+Description=kasmVNC session (Claude appliance)
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=/usr/bin/vncserver :1 -select-de manual
+ExecStop=/usr/bin/vncserver -kill :1
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+# cloudflared: Cloudflare's apt repo + a config skeleton the operator
+# finishes after the interactive `cloudflared tunnel login`.
+# $1 = public hostname, $2 = local websocket port
+profile_kasmvnc_setup_tunnel() {
+	local hostname="$1"
+	local port="$2"
+	local keyring='/usr/share/keyrings/cloudflare-main.gpg'
+	local list='/etc/apt/sources.list.d/cloudflared.list'
+
+	if ! command -v cloudflared > /dev/null 2>&1; then
+		if [[ ! -f $keyring ]]; then
+			if [[ ${appliance_dry_run:-0} -eq 1 ]]; then
+				printf 'DRY-RUN: install cloudflare apt key -> %s\n' \
+					"$keyring"
+			else
+				curl -fsSL \
+					https://pkg.cloudflare.com/cloudflare-main.gpg \
+					-o "$keyring" || return 1
+			fi
+		fi
+		printf 'deb [signed-by=%s] %s %s main' "$keyring" \
+			'https://pkg.cloudflare.com/cloudflared' \
+			"$(appliance_distro_codename)" | write_file "$list" \
+			|| return 1
+		run_cmd apt-get update || return 1
+		pkg_install cloudflared || return 1
+	fi
+
+	cloudflared_config "$hostname" "$port" \
+		| write_file /etc/cloudflared/config.yml || return 1
+
+	log_info 'cloudflared installed. Finish the tunnel interactively:'
+	log_info '  1. cloudflared tunnel login'
+	log_info '  2. cloudflared tunnel create claude-appliance'
+	log_info '  3. set "tunnel:" and "credentials-file:" in'
+	log_info '     /etc/cloudflared/config.yml'
+	log_info "  4. cloudflared tunnel route dns claude-appliance $hostname"
+	log_info '  5. cloudflared service install && systemctl start cloudflared'
+	log_info '  6. protect the hostname with a Cloudflare Access policy'
+}
+
+cloudflared_config() {
+	local hostname="$1"
+	local port="$2"
+	cat << EOF
+# Claude appliance tunnel. Set "tunnel" and "credentials-file" after
+# running: cloudflared tunnel login && cloudflared tunnel create ...
+# tunnel: <TUNNEL-UUID>
+# credentials-file: /root/.cloudflared/<TUNNEL-UUID>.json
+
+ingress:
+  - hostname: ${hostname}
+    service: http://127.0.0.1:${port}
+  - service: http_status:404
+EOF
+}
+
+# Full profile: packages, per-user config, service, tunnel.
+# $1 = user, $2 = public hostname
+profile_kasmvnc_apply() {
+	local user="$1"
+	local hostname="$2"
+	local port="$appliance_kasm_base_port"
+
+	profile_kasmvnc_install_packages || return 1
+	profile_kasmvnc_write_config "$user" "$port" || return 1
+	profile_kasmvnc_write_service "$user" || return 1
+	if [[ -n $hostname ]]; then
+		profile_kasmvnc_setup_tunnel "$hostname" "$port" || return 1
+	else
+		log_warn 'no --hostname given: skipping cloudflared setup'
+	fi
+}
