@@ -371,6 +371,22 @@ installable per member, usable from Cowork/Code sessions.
 
 ---
 
+## Spin-out — the `coworkstation` repo (decided, gated on Tier 1)
+
+Once the Tier 1 VPS hardware-verify passes, the appliance layer
+moves to a new repository named **coworkstation** under the owner's
+account, with fresh history. What carries over: `appliance/`, the
+three appliance docs (design, phases, runbook), `tests/appliance-*`
++ `tests/helpers/`, and `appliance-tests.yml`. What does not: the
+patch suite, packaging, and launcher — the new repo **consumes
+engines instead of forking them** (Anthropic's apt build where KVM
+exists; `claude-desktop-debian` releases for the bwrap path).
+
+Bootstrap contract for the new repo: dev = clone + `sudo
+./setup.sh` (wizard); prod = a versioned setup script (later a
+binary) downloadable from a release URL. This fork then reverts to
+tracking upstream `aaddrick/claude-desktop-debian` only.
+
 ## Phase 6 — deferred R&D (tracking only)
 
 Native Linux computer use in the app; Sunshine profile tuning; Android
