@@ -84,6 +84,55 @@ exec startxfce4
 EOF
 }
 
+# KasmVNC 1.3.x's vncserver prompts interactively on first run for a
+# control user ("Create a new user with write access… Provide selection
+# number:"). In a headless systemd context stdin is empty, so it loops
+# forever on "Invalid choice" and never binds a listener. Pre-create the
+# kasm control user non-interactively (writing ~/.kasmpasswd) so the
+# prompt is skipped. A random password is generated and stored for the
+# member in ~/.vnc/kasm-credentials; the primary gate is Cloudflare
+# Access in front of the session.
+# $1 = user
+profile_kasmvnc_setup_auth() {
+	local user="$1"
+	local home
+	home=$(user_home "$user") || return 1
+	local passfile="$home/.kasmpasswd"
+	local credfile="$home/.vnc/kasm-credentials"
+
+	if [[ ${appliance_dry_run:-0} -eq 1 ]]; then
+		printf 'DRY-RUN: create kasmvnc control user for %s\n' "$user"
+		return 0
+	fi
+	if [[ -f $passfile ]]; then
+		log_info "kasmVNC control user already configured for $user"
+		return 0
+	fi
+
+	local pw
+	pw=$(kasmvnc_gen_password)
+	# kasmvncpasswd reads the password twice from stdin; -u sets the
+	# username, -w grants write (desktop-control) access.
+	if ! printf '%s\n%s\n' "$pw" "$pw" \
+		| runuser -u "$user" -- kasmvncpasswd -u "$user" -w \
+			> /dev/null 2>&1; then
+		log_err "kasmvncpasswd failed to create control user $user"
+		return 1
+	fi
+	printf 'username=%s\npassword=%s\n' "$user" "$pw" \
+		| write_file "$credfile" 600 || return 1
+	chown "$user:$user" "$credfile" 2> /dev/null || true
+	log_info "kasmVNC control user '$user' created" \
+		"(credentials in $credfile)"
+}
+
+# 16-char alphanumeric password from the kernel CSPRNG.
+kasmvnc_gen_password() {
+	local raw
+	raw=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')
+	printf '%s' "${raw:0:16}"
+}
+
 # systemd user service so the session survives logout and starts at
 # boot (paired with loginctl enable-linger).
 # $1 = user, $2 = X display number (unique per member on the host)
@@ -203,6 +252,7 @@ profile_kasmvnc_apply() {
 
 	profile_kasmvnc_install_packages || return 1
 	profile_kasmvnc_write_config "$user" "$port" || return 1
+	profile_kasmvnc_setup_auth "$user" || return 1
 	profile_kasmvnc_write_service "$user" || return 1
 	if [[ -z $hostname ]]; then
 		log_warn 'no --hostname given: skipping cloudflared setup'
