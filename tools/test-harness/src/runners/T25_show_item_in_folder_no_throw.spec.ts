@@ -10,7 +10,7 @@ import {
 // path arg, and the IPC layer terminates at it without throwing.
 //
 // Tier 2 reframe of the case-doc T25 ("Code tab → right-click → Show
-// in Files opens system file manager with file pre-selected"). The
+// in Files opens system file manager with file preselected"). The
 // full click-chain version is Tier 3 and lives elsewhere; here we
 // just prove the JS-level egress at index.js:509431
 // (`hA.shell.showItemInFolder(Tc(path))`) is callable from main.
