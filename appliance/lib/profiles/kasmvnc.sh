@@ -43,16 +43,42 @@ profile_kasmvnc_install_packages() {
 		pkg_install "$tmp_deb" || return 1
 		run_cmd rm -f "$tmp_deb"
 	fi
-	pkg_install ssl-cert || return 1
-	# KasmVNC 1.3.x requires /etc/ssl/private/ssl-cert-snakeoil.key to
-	# exist even when require_ssl is false (TLS terminates at the
-	# tunnel). Installing ssl-cert does not reliably generate the
-	# snakeoil pair on a fresh cloud image, so vncserver exits 1 with
-	# "certificate file doesn't exist". Generate it explicitly.
-	if [[ ! -f /etc/ssl/private/ssl-cert-snakeoil.key ]]; then
-		run_cmd make-ssl-cert generate-default-snakeoil \
-			--force-overwrite || return 1
+}
+
+# KasmVNC 1.3.x requires a TLS cert+key even when require_ssl is false
+# (TLS terminates at the Cloudflare tunnel). Its default points at the
+# system snakeoil key /etc/ssl/private/ssl-cert-snakeoil.key, which is
+# mode 0640 root:ssl-cert and unreadable by the session user — vncserver
+# then exits 1 with "certificate file doesn't exist or isn't a file".
+# Give each user their OWN self-signed cert under ~/.vnc so there is no
+# dependency on system cert ownership/permissions.
+# $1 = user
+profile_kasmvnc_setup_cert() {
+	local user="$1"
+	local home
+	home=$(user_home "$user") || return 1
+	local key="$home/.vnc/self.key"
+	local pem="$home/.vnc/self.pem"
+
+	if [[ ${appliance_dry_run:-0} -eq 1 ]]; then
+		printf 'DRY-RUN: generate kasmvnc self-signed cert for %s\n' \
+			"$user"
+		return 0
 	fi
+	if [[ -f $key && -f $pem ]]; then
+		log_info "kasmVNC cert already present for $user"
+		return 0
+	fi
+	run_as_user "$user" mkdir -p "$home/.vnc" || return 1
+	if ! runuser -u "$user" -- openssl req -x509 -nodes \
+		-newkey rsa:2048 -days 3650 \
+		-keyout "$key" -out "$pem" -subj '/CN=localhost' \
+		> /dev/null 2>&1; then
+		log_err "failed to generate kasmVNC cert for $user"
+		return 1
+	fi
+	run_as_user "$user" chmod 600 "$key" || return 1
+	log_info "kasmVNC self-signed cert generated for $user"
 }
 
 # Per-user kasmVNC config: loopback bind, tunnel-terminated TLS.
@@ -64,7 +90,7 @@ profile_kasmvnc_write_config() {
 	home=$(user_home "$user") || return 1
 
 	run_as_user "$user" mkdir -p "$home/.vnc" || return 1
-	kasmvnc_yaml "$port" \
+	kasmvnc_yaml "$port" "$home" \
 		| write_file "$home/.vnc/kasmvnc.yaml" || return 1
 	if [[ ${appliance_dry_run:-0} -ne 1 ]]; then
 		chown "$user:$user" "$home/.vnc/kasmvnc.yaml"
@@ -77,12 +103,15 @@ profile_kasmvnc_write_config() {
 
 kasmvnc_yaml() {
 	local port="$1"
+	local home="$2"
 	cat << EOF
 network:
   interface: 127.0.0.1
   websocket_port: ${port}
   ssl:
     require_ssl: false
+    pem_certificate: ${home}/.vnc/self.pem
+    pem_key: ${home}/.vnc/self.key
 EOF
 }
 
@@ -260,6 +289,7 @@ profile_kasmvnc_apply() {
 	local port="$appliance_kasm_base_port"
 
 	profile_kasmvnc_install_packages || return 1
+	profile_kasmvnc_setup_cert "$user" || return 1
 	profile_kasmvnc_write_config "$user" "$port" || return 1
 	profile_kasmvnc_setup_auth "$user" || return 1
 	profile_kasmvnc_write_service "$user" || return 1

@@ -85,27 +85,45 @@ teardown() {
 	[[ $output == *'kasmvncpasswd failed'* ]]
 }
 
-@test "install_packages: generates snakeoil cert when missing" {
-	# stub the network + package steps; assert the snakeoil gen runs
-	appliance_distro_codename() { printf 'noble'; }
-	appliance_arch() { printf 'amd64'; }
-	command() {
-		if [[ $1 == '-v' && $2 == 'kasmvncserver' ]]; then return 0; fi
-		if [[ $1 == '-v' ]]; then return 0; fi
-		builtin command "$@"
-	}
-	dpkg() { return 0; }
-	pkg_install() { return 0; }
-	export APPLIANCE_SNAKEOIL="$TEST_TMP/snakeoil.key"  # absent
-	local ran=""
-	run_cmd() { [[ $1 == make-ssl-cert ]] && printf 'GEN\n' >> "$TEST_TMP/ran"; return 0; }
-	# point the check at a path that doesn't exist by shadowing test -f
-	# via a wrapper: run the function; snakeoil path is hardcoded, so
-	# we assert make-ssl-cert was invoked when the real path is absent.
-	if [[ -f /etc/ssl/private/ssl-cert-snakeoil.key ]]; then
-		skip 'host already has snakeoil cert'
-	fi
-	run profile_kasmvnc_install_packages
+
+@test "kasmvnc_yaml: references the per-user cert paths" {
+	local y
+	y=$(kasmvnc_yaml 8443 /home/alice)
+	[[ $y == *'websocket_port: 8443'* ]]
+	[[ $y == *'pem_certificate: /home/alice/.vnc/self.pem'* ]]
+	[[ $y == *'pem_key: /home/alice/.vnc/self.key'* ]]
+}
+
+@test "setup_cert: dry-run generates nothing" {
+	user_home() { printf '%s' "$TEST_TMP/home"; }
+	appliance_dry_run=1
+	run profile_kasmvnc_setup_cert alice
 	[[ $status -eq 0 ]]
-	grep -q GEN "$TEST_TMP/ran"
+	[[ $output == *'DRY-RUN: generate kasmvnc self-signed cert'* ]]
+	[[ ! -e $TEST_TMP/home/.vnc/self.key ]]
+}
+
+@test "setup_cert: generates a user-owned self-signed cert" {
+	mkdir -p "$TEST_TMP/home"
+	user_home() { printf '%s' "$TEST_TMP/home"; }
+	run_as_user() { shift; "$@"; }        # run directly as test user
+	runuser() { shift 3; "$@"; }          # drop `-u alice --`, run direct
+	run profile_kasmvnc_setup_cert alice
+	[[ $status -eq 0 ]]
+	[[ -f $TEST_TMP/home/.vnc/self.key ]]
+	[[ -f $TEST_TMP/home/.vnc/self.pem ]]
+	# valid PEM cert + key
+	grep -q 'BEGIN CERTIFICATE' "$TEST_TMP/home/.vnc/self.pem"
+	grep -qE 'BEGIN (PRIVATE|RSA PRIVATE) KEY' "$TEST_TMP/home/.vnc/self.key"
+	[[ $(stat -c '%a' "$TEST_TMP/home/.vnc/self.key") == 600 ]]
+}
+
+@test "setup_cert: idempotent when cert exists" {
+	mkdir -p "$TEST_TMP/home/.vnc"
+	printf 'x' > "$TEST_TMP/home/.vnc/self.key"
+	printf 'x' > "$TEST_TMP/home/.vnc/self.pem"
+	user_home() { printf '%s' "$TEST_TMP/home"; }
+	run profile_kasmvnc_setup_cert alice
+	[[ $status -eq 0 ]]
+	[[ $output == *'cert already present'* ]]
 }
