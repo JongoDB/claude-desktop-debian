@@ -632,7 +632,7 @@ if (serviceErrorIdx !== -1) {
             // Replace: <check>==="ENOENT"
             // With:    (<check>==="ENOENT"||process.platform==="linux"
             //           &&<check>==="ECONNREFUSED")
-            // where <check> re-uses the guarded ternary when present so
+            // where <check> reuses the guarded ternary when present so
             // non-Error throwables stay safe.
             const refusedCheck = isTernary
                 ? '(' + errVar + ' instanceof Error&&"code"in ' + errVar +
