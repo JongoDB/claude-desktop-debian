@@ -250,22 +250,24 @@ main() {
 		esac
 	done
 
+	# Validate flags before the root gate so usage errors are
+	# reported to non-root invocations too (and CI can test them).
 	case "$cmd" in
 		add)
-			require_root || return 1
 			if [[ -z $user || -z $name || -z $provider ]]; then
 				log_err 'add needs --user, --name, --provider'
 				return 1
 			fi
+			require_root || return 1
 			cmd_add "$user" "$name" "$provider" \
 				"$token_file" "$cache_max"
 			;;
 		remove)
-			require_root || return 1
 			if [[ -z $user || -z $name ]]; then
 				log_err 'remove needs --user and --name'
 				return 1
 			fi
+			require_root || return 1
 			cmd_remove "$user" "$name"
 			;;
 		list)
