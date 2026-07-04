@@ -1,0 +1,94 @@
+name: Appliance Tests
+run-name: |
+  Appliance: ${{
+    github.event_name == 'pull_request' && format('PR #{0} by @{1} - {2}', github.event.pull_request.number, github.actor, github.event.pull_request.title) ||
+    github.event_name == 'push' && github.event.head_commit && format('Push by @{0} - {1}', github.actor, github.event.head_commit.message) ||
+    format('{0} triggered by @{1}', github.event_name, github.actor)
+  }}
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "appliance/**"
+      - "tests/appliance-*.bats"
+      - "tests/helpers/**"
+      - ".github/workflows/appliance-tests.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "appliance/**"
+      - "tests/appliance-*.bats"
+      - "tests/helpers/**"
+      - ".github/workflows/appliance-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appliance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Shellcheck and JS syntax
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Shellcheck appliance scripts
+        run: |
+          shellcheck -x \
+            appliance/setup.sh \
+            appliance/member.sh \
+            appliance/gen-sshconfigs.sh \
+            appliance/testbench/setup.sh \
+            appliance/lib/*.sh \
+            appliance/lib/profiles/*.sh
+
+      - name: Node syntax check on MCP servers
+        run: |
+          node --check appliance/testbench/desktop-control-mcp.js
+          node --check appliance/testbench/vm-bench-mcp.js
+          node --check tests/helpers/mcp-client.js
+          node --check tests/helpers/qmp-mock-test.js
+
+      - name: Validate cloud-init YAML
+        run: |
+          python3 -c "import yaml, sys; \
+            yaml.safe_load(open('appliance/images/cloud-init.yaml'))"
+
+  bats:
+    name: Appliance BATS (with live Xvfb e2e)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install test dependencies
+        # The full X stack so the desktop-control end-to-end test
+        # runs for real instead of skipping.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats jq xvfb xdotool imagemagick \
+            x11-apps
+
+      - name: Run appliance BATS suites
+        run: bats --print-output-on-failure tests/appliance-*.bats
+
+      - name: Assert the e2e test ran (did not skip)
+        run: |
+          out=$(bats tests/appliance-mcp.bats 2>&1)
+          echo "$out"
+          if echo "$out" | grep -q '# skip'; then
+            echo 'live e2e was skipped on CI — dependency drift'
+            exit 1
+          fi

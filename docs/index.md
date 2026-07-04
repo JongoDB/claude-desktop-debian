@@ -17,6 +17,9 @@ claude-desktop --doctor
 ## Project direction
 
 - [**Decision log**](decisions.md) — ADR-format record of what we ship and (more importantly) what we won't
+- [**Cowork appliance design**](cowork-appliance-design.md) — headless, team-accessible Claude Desktop server: feature parity matrix, engine selection (official apt vs repo build), access layer, multi-tenancy
+- [**Cowork appliance phases**](cowork-appliance-phases.md) — executable specs for the appliance implementation phases: interfaces, acceptance criteria, test plans
+- [**Cowork appliance runbook**](cowork-appliance-runbook.md) — admin operations: provision, members, edge, SSH-target distribution, backup, troubleshooting
 - [**Releasing**](../RELEASING.md) — pre-release checklist, tag recipe, what CI does on tag push
 - [**Changelog**](../CHANGELOG.md) — `v2.0.0` onward, grouped by REPO_VERSION
 

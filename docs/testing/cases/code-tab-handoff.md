@@ -68,7 +68,7 @@ URL-encoded but `/` separators are preserved); `:68816` IPC handler
 1. In the Code tab, right-click a file path → "Show in Files" (Linux equivalent of macOS "Show in Finder" / Windows "Show in Explorer").
 2. Confirm the system file manager opens with the containing folder selected.
 
-**Expected:** System file manager (Nautilus on GNOME, Dolphin on KDE, Thunar on Xfce, etc.) opens with the file pre-selected. Resolution respects `xdg-mime` defaults.
+**Expected:** System file manager (Nautilus on GNOME, Dolphin on KDE, Thunar on Xfce, etc.) opens with the file preselected. Resolution respects `xdg-mime` defaults.
 
 **Diagnostics on failure:** `xdg-mime query default inode/directory`, `xdg-open <dir>` from terminal, the menu label rendered (was it Linux-specific or stuck on "Show in Finder"?), launcher log.
 
@@ -78,7 +78,7 @@ URL-encoded but `/` separators are preserved); `:68816` IPC handler
 handler `FileSystem.showInFolder(path)`; `:509431` impl thin-wraps
 `hA.shell.showItemInFolder(Tc(path))`. Electron's `showItemInFolder` on Linux
 falls back to `xdg-open` on the parent directory when no DBus FileManager1
-service is present, so the file is rarely pre-selected on minimal DEs — only
+service is present, so the file is rarely preselected on minimal DEs — only
 the parent folder opens.
 
 ## T34 — Connector OAuth round-trip

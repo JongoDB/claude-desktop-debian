@@ -319,17 +319,32 @@ function extractBlock(str, startIdx, open = '{') {
 // stays grayed out but the app still runs, so warn rather than exit.
 // ============================================================
 {
+    // Two anchor generations:
+    //   <=1.15200: win32-only probe    — const X="win32",Y=process.arch;...
+    //   >=1.18286: unified darwin+win32 probe — const X=process.platform;
+    //              if(X!=="darwin"&&X!=="win32")return{status:"unsupported"...
+    // Both are globally unique in their bundles (verified against
+    // 1.18286.0); try new shape first, fall back to old.
     const evalRe =
         /(const [\w$]+="win32",([\w$]+)=process\.arch;if\(\2!=="x64"&&\2!=="arm64"\))/;
-    if (/if\(process\.platform==="linux"\)return\{status:"supported"\};const [\w$]+="win32"/.test(code)) {
+    const evalRe2 =
+        /(const ([\w$]+)=process\.platform;if\(\2!=="darwin"&&\2!=="win32"\)return\{status:"unsupported")/;
+    if (/if\(process\.platform==="linux"\)return\{status:"supported"\};const [\w$]+=(?:"win32"|process\.platform)/.test(code)) {
         console.log('  VM-supported evaluator Linux gate already' +
             ' applied (Patch 1b)');
+    } else if (evalRe2.test(code)) {
+        code = code.replace(evalRe2,
+            'if(process.platform==="linux")return{status:"supported"};$1');
+        console.log('  Patched VM-supported evaluator to report' +
+            ' supported on Linux (unified-probe shape, 1.18286+)');
+        patchCount++;
     } else {
         const evalMatch = code.match(evalRe);
         if (!evalMatch) {
-            console.log('  WARNING: could not find q4r support-evaluator' +
-                ' anchor (win32/arch probe) — Cowork tab may stay grayed' +
-                ' out on Linux (renderer reads the support evaluator)');
+            console.log('  WARNING: could not find support-evaluator' +
+                ' anchor (win32/arch or platform probe) — Cowork tab may' +
+                ' stay grayed out on Linux (renderer reads the support' +
+                ' evaluator)');
         } else {
             code = code.replace(evalRe,
                 'if(process.platform==="linux")return{status:"supported"};$1');
@@ -584,26 +599,48 @@ if (serviceErrorIdx !== -1) {
     // Step 1: Find the ENOENT check and expand it to include ECONNREFUSED
     // Pattern: VAR.code==="ENOENT"
     // Search backwards from the error string to find it
-    if (/process\.platform==="linux"&&[\w$]+\.code==="ECONNREFUSED"/.test(code)) {
+    if (/process\.platform==="linux"&&(?:[\w$]+\.code|\([\w$]+ instanceof Error&&"code"in [\w$]+\?[\w$]+\.code:void 0\))==="ECONNREFUSED"/.test(code)) {
         console.log('  ENOENT/ECONNREFUSED expansion already applied');
     } else {
         const searchStart = Math.max(0, serviceErrorIdx - 300);
         const beforeRegion = code.substring(searchStart, serviceErrorIdx);
+        // Two shapes of the ENOENT check:
+        //   <=1.15200: VAR.code==="ENOENT"
+        //   >=1.18286: (VAR instanceof Error&&"code"in VAR
+        //               ?VAR.code:void 0)==="ENOENT"
+        // Try the guarded-ternary shape first (it contains ".code"
+        // too, so the bare-VAR regex must not run first and mangle it).
+        const ternRe =
+            /\(([\w$]+) instanceof Error&&"code"in \1\?\1\.code:void 0\)==="ENOENT"/g;
         const enoentRe = /([\w$]+)\.code\s*===\s*"ENOENT"/g;
-        let enoentMatch;
         let lastEnoent = null;
-        while ((enoentMatch = enoentRe.exec(beforeRegion)) !== null) {
+        let isTernary = false;
+        let enoentMatch;
+        while ((enoentMatch = ternRe.exec(beforeRegion)) !== null) {
             lastEnoent = enoentMatch;
+            isTernary = true;
+        }
+        if (!lastEnoent) {
+            while ((enoentMatch = enoentRe.exec(beforeRegion)) !== null) {
+                lastEnoent = enoentMatch;
+            }
         }
         if (lastEnoent) {
             const enoentStr = lastEnoent[0];
             const errVar = lastEnoent[1];
             const enoentAbsIdx = searchStart + lastEnoent.index;
-            // Replace: VAR.code==="ENOENT"
-            // With:    (VAR.code==="ENOENT"||process.platform==="linux"&&VAR.code==="ECONNREFUSED")
+            // Replace: <check>==="ENOENT"
+            // With:    (<check>==="ENOENT"||process.platform==="linux"
+            //           &&<check>==="ECONNREFUSED")
+            // where <check> reuses the guarded ternary when present so
+            // non-Error throwables stay safe.
+            const refusedCheck = isTernary
+                ? '(' + errVar + ' instanceof Error&&"code"in ' + errVar +
+                    '?' + errVar + '.code:void 0)==="ECONNREFUSED"'
+                : errVar + '.code==="ECONNREFUSED"';
             const expanded =
                 '(' + enoentStr +
-                '||process.platform==="linux"&&' + errVar + '.code==="ECONNREFUSED")';
+                '||process.platform==="linux"&&' + refusedCheck + ')';
             code = code.substring(0, enoentAbsIdx) +
                 expanded +
                 code.substring(enoentAbsIdx + enoentStr.length);

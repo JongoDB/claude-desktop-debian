@@ -6,4 +6,5 @@ check-hidden = true
 # openIn — substring of `openInEditor` IPC channel name (upstream).
 # YHe — minified function identifier in build-reference anchor.
 # hel — three-char literal in QE-13 example ("hel (3) submits").
-ignore-words-list = openIn,YHe,hel
+# VIe, toi — minified identifiers in tray-patches.bats fixtures.
+ignore-words-list = openIn,YHe,hel,VIe,toi
