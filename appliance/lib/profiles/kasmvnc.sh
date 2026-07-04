@@ -44,6 +44,15 @@ profile_kasmvnc_install_packages() {
 		run_cmd rm -f "$tmp_deb"
 	fi
 	pkg_install ssl-cert || return 1
+	# KasmVNC 1.3.x requires /etc/ssl/private/ssl-cert-snakeoil.key to
+	# exist even when require_ssl is false (TLS terminates at the
+	# tunnel). Installing ssl-cert does not reliably generate the
+	# snakeoil pair on a fresh cloud image, so vncserver exits 1 with
+	# "certificate file doesn't exist". Generate it explicitly.
+	if [[ ! -f /etc/ssl/private/ssl-cert-snakeoil.key ]]; then
+		run_cmd make-ssl-cert generate-default-snakeoil \
+			--force-overwrite || return 1
+	fi
 }
 
 # Per-user kasmVNC config: loopback bind, tunnel-terminated TLS.

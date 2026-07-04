@@ -84,3 +84,28 @@ teardown() {
 	[[ $status -ne 0 ]]
 	[[ $output == *'kasmvncpasswd failed'* ]]
 }
+
+@test "install_packages: generates snakeoil cert when missing" {
+	# stub the network + package steps; assert the snakeoil gen runs
+	appliance_distro_codename() { printf 'noble'; }
+	appliance_arch() { printf 'amd64'; }
+	command() {
+		if [[ $1 == '-v' && $2 == 'kasmvncserver' ]]; then return 0; fi
+		if [[ $1 == '-v' ]]; then return 0; fi
+		builtin command "$@"
+	}
+	dpkg() { return 0; }
+	pkg_install() { return 0; }
+	export APPLIANCE_SNAKEOIL="$TEST_TMP/snakeoil.key"  # absent
+	local ran=""
+	run_cmd() { [[ $1 == make-ssl-cert ]] && printf 'GEN\n' >> "$TEST_TMP/ran"; return 0; }
+	# point the check at a path that doesn't exist by shadowing test -f
+	# via a wrapper: run the function; snakeoil path is hardcoded, so
+	# we assert make-ssl-cert was invoked when the real path is absent.
+	if [[ -f /etc/ssl/private/ssl-cert-snakeoil.key ]]; then
+		skip 'host already has snakeoil cert'
+	fi
+	run profile_kasmvnc_install_packages
+	[[ $status -eq 0 ]]
+	grep -q GEN "$TEST_TMP/ran"
+}
