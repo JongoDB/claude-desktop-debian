@@ -273,6 +273,59 @@ appliance/member.sh list
 
 ---
 
+## Phase 2.5 — remote-backed storage (implemented)
+
+**Goal**: project data lives in the member's cloud storage, not on
+the appliance disk — the macOS pattern (Cowork folders that *are*
+Google Drive folders) with a bounded local cache instead of a full
+sync, so a small VPS disk serves large accounts.
+
+### Interface
+
+```bash
+sudo appliance/storage.sh add --user alice --provider gdrive \
+	--name drive [--token-file FILE] [--cache-max 10G]
+sudo appliance/storage.sh remove --user alice --name drive
+appliance/storage.sh list --user alice
+```
+
+Providers: `gdrive`, `onedrive`, `dropbox` (anything else via raw
+rclone). OAuth is a one-time paste: the member runs
+`rclone authorize "<backend>"` on any machine with a browser and
+pastes the token JSON at the wizard prompt (or via `--token-file`).
+The token lands in the member's own `~/.config/rclone/rclone.conf`,
+passed through env, never argv.
+
+### Behavior
+
+- `rclone mount` per remote as a systemd **user** unit
+  (`rclone-<name>.service`), mounted at `~/CloudDrives/<name>` with
+  `--vfs-cache-mode full`, `--vfs-cache-max-size` (default 10G),
+  24 h cache age, `--umask 077`. Near-local read/write semantics;
+  disk usage capped at the cache bound.
+- Members point Cowork/Code project folders inside the mount. The
+  Cowork daemon's bind of paths under `$HOME` carries the FUSE
+  mount into the bwrap sandbox unchanged.
+- `remove` detaches the mount and deletes the remote config; the
+  provider-side data is untouched.
+
+### Acceptance criteria (BATS, stubbed rclone/systemd)
+
+- Provider mapping validates; unknown providers are refused.
+- The unit file wires the bounded cache, umask, and lazy unmount.
+- Token intake works from file and interactive paste, and fails
+  cleanly with neither.
+- Dry-run plans everything and writes nothing.
+
+### Hardware-verify checklist
+
+- [ ] Google Drive mount on the Tier 1 VPS; a Cowork session driving
+      a project folder inside it end-to-end (bwrap bind over FUSE)
+- [ ] Cache stays under `--cache-max` during a large-repo session
+- [ ] OneDrive variant
+
+---
+
 ## Phase 3 — test bench (computer-use substitutes)
 
 **Goal**: the MCP toolset from the design doc's

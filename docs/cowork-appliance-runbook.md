@@ -90,6 +90,20 @@ Sizing guidance: ~1–2 GB per active Cowork member on bwrap, ~4 GB on
 KVM, plus the Electron sessions. Watch `systemd-cgtop` — quotas are
 slices, so a noisy member throttles before starving the box.
 
+## Cloud storage (keep project data off the appliance disk)
+
+```bash
+sudo appliance/storage.sh add --user alice --provider gdrive --name drive
+```
+
+The wizard tells the member to run `rclone authorize "drive"` on
+their laptop and paste the token. Their Drive then appears at
+`~/CloudDrives/drive` with a bounded local cache (default 10G,
+`--cache-max` to change); Cowork/Code project folders are selected
+inside it, exactly like pointing macOS Cowork at a synced Drive
+folder. `storage.sh list --user alice` shows remotes and mount
+health; `remove` detaches without touching provider data.
+
 ## Test bench
 
 ```bash
