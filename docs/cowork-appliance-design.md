@@ -6,8 +6,9 @@ A headless, internet-connected, team-accessible Claude Desktop server ("the appl
 
 - **Base**: one always-on Linux box (x86_64 mini PC or arm64 SBC) running Claude Desktop
 - **Engine**: official Anthropic apt build by default; this repo's build where the official one can't run (no KVM, non-Debian, bwrap portability)
-- **Access**: per-user remote desktop for the full app; SSH-target mode for Code-tab sessions from members' own desktop apps; Dispatch from phones
-- **Trust boundary**: Tailscale network + per-member Linux accounts + bwrap/KVM Cowork isolation + AppArmor
+- **Access**: clientless, browser-only — per-user kasmVNC/Guacamole sessions behind Cloudflare Zero Trust (Tunnel + Access); SSH-target mode for Code-tab sessions from members' own desktop apps; Dispatch from phones
+- **Trust boundary**: identity-aware edge (Access + IdP SSO/MFA) + per-member Linux accounts and systemd slices + bwrap/KVM Cowork isolation + AppArmor
+- **Testing**: a multi-OS test bench (MCP tools over disposable displays and VMs) substitutes for the upstream computer-use gate
 
 ## Goals and non-goals
 
@@ -42,7 +43,7 @@ What each feature needs from the appliance, and its status. "Official Linux" is 
 | Dispatch (phone → desktop handoff) | yes | yes | yes | Requires the desktop app running and signed in — exactly what the appliance guarantees, per member |
 | Quick Entry global hotkey | X11 yes; native Wayland needs GlobalShortcuts portal | same | yes | xrdp sessions are Xorg, so the X11 path applies |
 | System tray | yes | yes (repo has extra fixes) | yes | Needs a tray-capable DE/panel in the remote session |
-| Computer use (app/screen control) | **no — macOS/Windows research preview only** | no | no | Also Pro/Max-only; **not available on Team/Enterprise plans at all**. See gap tracking below |
+| Computer use (app/screen control) | **no — macOS/Windows research preview only** | no | substitutable | Also Pro/Max-only; **not available on Team/Enterprise plans at all**. The appliance ships a stronger substitute for the app-testing use case — see [the multi-OS test bench](#computer-use-substitutes--the-multi-os-test-bench) |
 | Dictation | **no on Linux desktop** | no | practical workaround | Client-side OS dictation (iPad/Android keyboard mic) types into the remote session; CLI voice dictation exists separately |
 | Fedora/RHEL packages | no | yes (rpm) | n/a | Repo build is the only option there today |
 
@@ -77,14 +78,14 @@ Three complementary paths, not one:
 
 ### 1. Remote desktop (full app: Chat + Cowork + Code)
 
-**xrdp is the default.** It is the only mainstream option with true multi-user semantics — each member RDPs into *their own* Xorg session under their own Linux account. Clients are first-class on iPad (Windows App, Jump Desktop), Android, and every OS. This repo already carries the two fixes that make it work:
+**kasmVNC is the default session layer.** It serves each member's desktop as an ordinary HTTPS web app — the natural fit for the clientless edge below — with per-user instances under each member's Linux account, reached through per-member hostnames behind Cloudflare Access. **Apache Guacamole** is the alternative gateway when a team wants one HTML5 portal multiplexing many session types (VNC/RDP/SSH) with its own connection-level permissions, session recording, and no per-seat cost.
+
+**xrdp stays as the protocol-native option** — for members who prefer a real RDP client, or behind Cloudflare's browser-rendered RDP. Each member RDPs into their own Xorg session; this repo already carries the two fixes that make Claude Desktop behave there:
 
 - the XRDP GPU-compositing blank-window fix (launcher detects the session type and adjusts GPU flags; #davidamacey),
 - GPU-crash auto-recovery relaunch with safe flags.
 
-**kasmVNC as the zero-install alternative**: browser-only access (iPad Safari, Chromebooks, locked-down machines), per-user instances on distinct ports behind Tailscale.
-
-**Sunshine/Moonlight for the latency-sensitive single seat**: best-in-class feel on iPad, but single-session and needs a hardware encoder (Intel iGPU/QuickSync; note the Pi 5 has no H.264 encoder, so software encoding costs CPU there). Offered as an opt-in profile, not the team default.
+**Sunshine/Moonlight for the latency-sensitive single seat**: best-in-class feel on iPad, but single-session, client install required, and needs a hardware encoder (Intel iGPU/QuickSync; note the Pi 5 has no H.264 encoder, so software encoding costs CPU there). Offered as an opt-in profile, not the team default.
 
 Session shell: a lightweight tray-capable DE (XFCE or LXQt) so the tray, Quick Entry (X11 path), and window management all behave. Claude Desktop autostarts per user via XDG Autostart — the same mechanism the repo already uses for "Run on startup" persistence.
 
@@ -102,10 +103,74 @@ This path costs no display server, no encoder, and no session state — it's the
 
 Each member's appliance session is a signed-in, always-on desktop — which is precisely the prerequisite Dispatch needs. Members message Claude from the mobile app; the work executes in their appliance session with their files and connectors; results come back to the same conversation. No appliance-side code needed beyond "keep the app running," which close-to-tray (already a repo feature) provides.
 
-### Networking
+### Networking — clientless by default
 
-- **Tailscale by default.** No public exposure of xrdp/VNC ever; ACL tags (`tag:cowork-appliance`) scope which members reach which ports. Works from cellular iPads without port forwarding.
-- Public HTTPS is out of scope for v1. If a team can't use a tailnet, kasmVNC behind a reverse proxy with SSO is the documented escape hatch, with loud warnings.
+The default edge is **Cloudflare Zero Trust**, not a VPN:
+
+- **`cloudflared` Tunnel** from the appliance — outbound-only, zero open
+  inbound ports, fronted by Cloudflare's CDN/WAF/DDoS layer.
+- **Cloudflare Access** in front of every hostname — SSO via the team's
+  IdP (Google Workspace, Entra, GitHub, generic OIDC), MFA, per-user and
+  per-group policies, full access audit logs. This is where edge-level
+  RBAC lives: which member may reach which session hostname is an Access
+  policy, enforced before a packet reaches the appliance.
+- **Clientless sessions in the browser**: Cloudflare renders
+  [RDP, VNC, and SSH in-browser](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/non-http/browser-rendering/)
+  behind Access, and kasmVNC/Guacamole sessions are ordinary HTTPS web
+  apps that need no rendering help at all. Any device with a browser —
+  iPad Safari, Android, a locked-down loaner laptop — is a full client
+  with nothing installed.
+
+Trade-offs, stated plainly:
+
+- Every session round-trips through Cloudflare's nearest PoP. For
+  productivity work this is imperceptible; it is not game-stream
+  latency. The Sunshine/Moonlight profile remains the opt-in answer for
+  a latency-critical single seat.
+- The appliance trusts Cloudflare as an identity-aware proxy. Teams
+  that can't accept that get the **overlay profile** (Tailscale/
+  headscale) as a supported alternative — same appliance, different
+  edge — and it doubles as the break-glass path if the tunnel or IdP is
+  down.
+- Raw xrdp/VNC ports are never bound to public interfaces under either
+  profile; `appliance-doctor` fails loudly if it finds one.
+
+## Computer-use substitutes — the multi-OS test bench
+
+Upstream computer use points Claude at *your live desktop*. For the appliance's headline use case — members having Claude test the desktop apps they're building, across OSes — that's the wrong shape anyway: test targets should be disposable, snapshotable, and isolated from the member's real session. The appliance therefore ships GUI control as a set of MCP tools available inside every Cowork/Code session, layered from most deterministic to most general:
+
+**Tier 1 — deterministic drivers (prefer these).** For web apps, the Playwright MCP server. For Electron apps, Playwright's `_electron.launch()` — the exact harness this repo already uses for its own integration tests ([testing/automation.md](testing/automation.md)); Tauri apps via their WebDriver. Deterministic drivers beat screenshot-clicking on speed, cost, and flake rate, mirroring upstream Cowork's own priority order (connectors → Bash → browser → screen control).
+
+**Tier 2 — Linux GUI control.** For native GTK/Qt apps or whole-desktop flows: a nested, disposable display per test (Xvfb, Xephyr, or headless wlroots — never the member's own session), driven two ways:
+
+- **accessibility-tree-first**: AT-SPI2 (dogtail-style queries) for locating and activating controls — the same philosophy as this repo's AX-tree test walker, and far more robust than pixel matching;
+- **screenshot + input fallback**: `xdotool`/`ydotool` plus screen capture, exposed as an MCP tool. Anthropic's own computer-use **API** reference environment (the `computer-use-demo` container: Ubuntu + Xvfb + noVNC) runs on Linux unmodified — the *model capability* is fully available here even though the Desktop-app feature is gated; only the packaging differs.
+
+**Tier 3 — cross-OS targets.** The appliance's KVM stack does double duty as a test-target hypervisor:
+
+- **Windows**: a Windows VM (licensed) with snapshot-per-test; input via QEMU QMP `input-send-event` or FreeRDP automation, screenshots via QMP; or WinAppDriver inside the guest for deterministic driving. Claude orchestrates via a `vm-bench` MCP server (boot-from-snapshot, screenshot, input, collect-artifacts, restore).
+- **Android**: emulator + `adb`/`maestro` on the appliance directly.
+- **macOS and iOS**: **only legal on Apple hardware** — macOS VMs on non-Apple machines violate Apple's license, so the appliance never offers them. The supported pattern is a Mac node (Mac mini on the same network, or MacStadium/EC2 Mac) joined as an SSH-session target and runner; iOS simulators come with it.
+
+Result: for app-testing, the appliance is *stronger* than upstream computer use — disposable, snapshot-restorable, multi-OS targets with audit artifacts — while the "control my real desktop" remainder stays tracked as an upstream gap.
+
+## Client architecture — browser-first, control plane server-side
+
+**No custom native client.** The browser is the thin client; that's what the clientless edge buys. A native app would reintroduce exactly what the appliance exists to escape: per-platform builds (iPadOS, Android, three desktops), app-store review latency, and a second codebase chasing upstream. Members who want an "app" get a **PWA install** of the session page — icon, full-screen, nothing to maintain.
+
+The concerns behind the question are real but they are **control-plane** concerns, and they live server-side:
+
+| Concern | Where it lives |
+|---|---|
+| Identity / RBAC | Team IdP → Cloudflare Access policies (edge), mapped to Guacamole/Kasm roles and Unix accounts (session) |
+| Per-user isolation | Linux accounts + per-user Cowork sandboxes (v1) → per-member incus containers/VMs (v2) for hard multi-tenancy |
+| Resource sharing / quotas | systemd user slices (`MemoryMax`, `CPUQuota`, `TasksMax` per member) — declarative, no daemon to build |
+| Concurrency limits | session broker: Guacamole connection limits or Kasm's built-in per-user/per-group session caps |
+| Audit | Access logs (edge) + session recording (Guacamole/Kasm) + Cowork/Code session history (upstream) |
+
+**Buy before build**: [Kasm Workspaces](https://kasmweb.com) is effectively this entire control plane off the shelf — per-user containerized desktops, web-native streaming, RBAC, session caps, resource profiles (Community Edition is capped at 5 concurrent sessions; paid beyond). The trade-off is that Claude Desktop inside Kasm's Docker containers complicates Cowork isolation (bwrap-in-Docker needs userns configuration; KVM needs `/dev/kvm` passthrough), whereas plain Linux accounts + slices keep Cowork's backends exactly as this repo already exercises them. So: **v1 composes accounts + slices + kasmVNC/Guacamole + Access**; Kasm is the documented alternative for teams that want a vendor-shaped control plane and accept the container nesting work.
+
+The only custom UI the appliance ever grows is a small **web console** (Phase 3+): member management, session launch links, `appliance-doctor` status, test-bench VM inventory. A web page behind Access — not an installed client.
 
 ## Multi-tenancy and security model
 
@@ -136,7 +201,7 @@ The repo's in-place upgrade detection (watching `app.asar` replacement and offer
 - **Engine**: which engine/backend rule fired; `/dev/kvm` + vsock + qemu + virtiofsd, or bwrap functional test; AppArmor userns status
 - **Display**: xrdp service health, per-user session capability, GPU/encoder availability, session DE tray support
 - **Identity**: per-user keyring/password-store non-empty check, signed-in state
-- **Network**: tailnet reachability, ACL tag presence, no publicly bound xrdp/VNC ports (fail loudly if found)
+- **Network**: `cloudflared` tunnel health, Access policy presence per session hostname, no publicly bound xrdp/VNC ports (fail loudly if found); overlay-profile equivalent checks (tailnet reachability, ACL tag) when that profile is active
 - **Update**: unattended-upgrades enabled for every channel in the table above
 
 Same conventions as the existing doctor: symptom-keyed output, distro-specific install hints, and no false-green PASSes on empty/unreadable probes (#692).
@@ -145,7 +210,7 @@ Same conventions as the existing doctor: symptom-keyed output, distro-specific i
 
 | Gap | Upstream state | Appliance stance |
 |---|---|---|
-| Computer use on Linux | macOS/Windows research preview; Pro/Max only, excluded from Team/Enterprise | Document; do not patch. Revisit when Linux ships and/or Team plans gain access. A Linux implementation would need AT-SPI2/`ydotool`-class work — greenfield, out of scope |
+| Computer use on Linux | macOS/Windows research preview; Pro/Max only, excluded from Team/Enterprise | Do not patch the app. Ship the [multi-OS test bench](#computer-use-substitutes--the-multi-os-test-bench) MCP tools instead, which cover the app-testing use case better; revisit the native feature when Linux ships and/or Team plans gain access |
 | Dictation on Linux | absent | Client-side OS dictation via remote session; CLI voice dictation |
 | Quick Entry on native Wayland | blocked on Electron app-id handshake ([electron#51875](https://github.com/electron/electron/issues/51875)) | Appliance sessions are Xorg (xrdp), so unaffected in practice |
 | Fedora/RHEL official packages | "coming in the future" | Repo build covers it |
@@ -153,8 +218,9 @@ Same conventions as the existing doctor: symptom-keyed output, distro-specific i
 
 ## Implementation phases
 
-1. **Single-user headless appliance** — `appliance/setup.sh` (bash-styleguide-conformant): engine selection + install, XFCE + xrdp with the GPU fixes, Tailscale, XDG autostart, `appliance-doctor`. Target: Debian 12/Ubuntu 24.04, x86_64 + arm64.
-2. **Multi-user** — member add/remove flow (account, keyring PAM, autostart, ACL tag), per-user kasmVNC option, sizing docs.
-3. **Team distribution** — managed-settings `sshConfigs` generator for SSH-target mode; admin runbook.
-4. **Images** — pi-gen image for Pi 5, cloud-init for VPS/mini-PC, CI smoke tests reusing the repo's BATS + headless-launch harness patterns.
-5. **R&D (explicitly deferred)** — Linux computer use, Sunshine profile tuning, Android AVF on-device experiments (repo build + bwrap; no nested KVM inside AVF).
+1. **Single-user headless appliance** — `appliance/setup.sh` (bash-styleguide-conformant): engine selection + install, XFCE session, kasmVNC, `cloudflared` tunnel + Access application, XDG autostart, `appliance-doctor`. xrdp and the Tailscale overlay as alternative profiles. Target: Debian 12/Ubuntu 24.04, x86_64 + arm64.
+2. **Multi-user** — member add/remove flow (account, keyring PAM, systemd slice quotas, per-user kasmVNC instance, Access policy entry), sizing docs.
+3. **Test bench** — Tier 1/2 MCP tools (Playwright, `_electron`, AT-SPI + nested-display screenshot/input), then the `vm-bench` MCP server for Windows/Android targets; web console v0 (session links + doctor status).
+4. **Team distribution** — managed-settings `sshConfigs` generator for SSH-target mode; Guacamole gateway option; admin runbook.
+5. **Images** — pi-gen image for Pi 5, cloud-init for VPS/mini-PC, CI smoke tests reusing the repo's BATS + headless-launch harness patterns.
+6. **R&D (explicitly deferred)** — native Linux computer use in the app, Sunshine profile tuning, Android AVF on-device experiments (repo build + bwrap; no nested KVM inside AVF), Mac-node automation for the macOS/iOS test leg.
