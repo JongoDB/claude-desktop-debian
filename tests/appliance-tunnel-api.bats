@@ -276,3 +276,48 @@ teardown() {
 	[[ $output == *'DRY-RUN: api ingress+dns+access for alice.claude.example.com'* ]]
 	[[ $output != *'rewrite'* ]]
 }
+
+# =============================================================================
+# Dry-run network guard + interactive wizard
+# =============================================================================
+
+@test "tunnel_api_provision: dry-run prints a plan, never calls the API" {
+	appliance_dry_run=1
+	cf_api() { printf 'CALLED\n' >> "$CALL_LOG"; }
+	run tunnel_api_provision claude.example.com 8443 \
+		"$TEST_TMP/token" 'alice@example.com'
+	[[ $status -eq 0 ]]
+	[[ $output == *'DRY-RUN: cloudflare api provisioning plan'* ]]
+	[[ $output == *'claude.example.com -> http://127.0.0.1:8443'* ]]
+	[[ ! -f $CALL_LOG ]] || ! grep -q 'CALLED' "$CALL_LOG"
+}
+
+@test "setup wizard: prompts fill missing flags on a TTY" {
+	run bash -c 'printf "\n" | APPLIANCE_ASSUME_TTY=1 \
+		bash "'"$SCRIPT_DIR"'/../appliance/setup.sh" \
+		--user ghost --dry-run 2>&1'
+	[[ $status -ne 0 ]]
+	[[ $output == *'Public hostname'* ]]
+	[[ $output == *"user 'ghost' does not exist"* ]]
+}
+
+@test "setup wizard: silent without a TTY (cloud-init/CI safe)" {
+	run bash -c 'printf "" | \
+		bash "'"$SCRIPT_DIR"'/../appliance/setup.sh" \
+		--user ghost --dry-run 2>&1'
+	[[ $status -ne 0 ]]
+	[[ $output != *'Public hostname'* ]]
+}
+
+@test "setup wizard: token answer cascades to access-allow prompt" {
+	printf 'tok\n' > "$TEST_TMP/tokfile"
+	run bash -c 'printf "claude.example.com\n%s\n\n" \
+		"'"$TEST_TMP"'/tokfile" | APPLIANCE_ASSUME_TTY=1 \
+		bash "'"$SCRIPT_DIR"'/../appliance/setup.sh" \
+		--user ghost --dry-run 2>&1'
+	[[ $status -ne 0 ]]
+	[[ $output == *'Cloudflare API token file'* ]]
+	[[ $output == *'Access allow list'* ]]
+	# blank allow answer + token set => api-mode validation fires
+	[[ $output == *'--access-allow'* ]]
+}

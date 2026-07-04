@@ -46,6 +46,32 @@ usage() {
 	sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
+# Interactive wizard: fill missing flags from the terminal so the
+# dev bootstrap is just `git clone ... && sudo appliance/setup.sh`.
+# Non-interactive runs (cloud-init, CI pipes) skip the prompts and
+# rely on flags. Reads/writes main()'s locals via dynamic scoping.
+# APPLIANCE_ASSUME_TTY=1 forces the prompts (test seam).
+prompt_missing_flags() {
+	if [[ ${APPLIANCE_ASSUME_TTY:-0} -ne 1 && ! -t 0 ]]; then
+		return 0
+	fi
+	# printf the prompts explicitly: bash suppresses `read -p` output
+	# when stdin is not a terminal, which breaks the test seam.
+	if [[ -z $hostname ]]; then
+		printf 'Public hostname (blank = skip tunnel setup): ' >&2
+		read -r hostname
+	fi
+	if [[ -n $hostname && -z $token_file ]]; then
+		printf 'Cloudflare API token file (blank = manual tunnel): ' \
+			>&2
+		read -r token_file
+	fi
+	if [[ -n $token_file && -z $access_allow ]]; then
+		printf 'Access allow list (emails/domains, comma-sep): ' >&2
+		read -r access_allow
+	fi
+}
+
 install_session_stack() {
 	pkg_install xfce4 xfce4-terminal dbus-x11 \
 		gnome-keyring libsecret-1-0 libpam-gnome-keyring
@@ -114,6 +140,10 @@ main() {
 			return 1
 			;;
 	esac
+
+	if [[ $mode == 'setup' ]]; then
+		prompt_missing_flags
+	fi
 
 	local tunnel_mode='manual'
 	if [[ -n $token_file ]]; then

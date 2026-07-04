@@ -71,6 +71,26 @@ part of every test pass.
 | 2 | Intel N100/N150 mini PC, 32 GB RAM | Ubuntu Server 24.04 | **official apt build + KVM** (only tier with `/dev/kvm`) | official-engine Cowork, multi-member concurrency under slice quotas, vm-bench with a licensed Windows guest; graduates to production |
 | 3 | Raspberry Pi 5 16 GB, NVMe/USB3 SSD | Raspberry Pi OS **Lite** (Bookworm, arm64) | repo build arm64 + bwrap | arm64 deb path, XFCE-install-on-bare-Lite, kasmVNC without a hardware encoder, pi-gen recipe |
 
+### Sizing (bwrap engine; budget per *concurrently active* member)
+
+Rule of thumb per active member: Electron ~1–1.5 GB + XFCE/kasmVNC
+~1 GB + a Cowork bwrap session ~0.5–1.5 GB ≈ **2.5–3.5 GB RAM and
+~1.5 vCPU**, plus ~1 GB for the OS. Idle signed-in members
+(close-to-tray) cost a fraction of that. KVM-engine Cowork adds a
+guest VM: budget ~4 GB per active member instead.
+
+| Concurrent members | Tier 1 VPS (DO Basic / Hetzner) | Notes |
+|---|---|---|
+| 1 | 2 vCPU / 4 GB (DO $24; Hetzner CPX21) | comfortable solo |
+| 2 | 4 vCPU / 8 GB (DO $48; Hetzner CPX31) | resize up when the second seat becomes real — CPU/RAM resizes are reversible |
+| 3–4 | 8 vCPU / 16 GB | consider the Tier 2 mini PC instead at this point |
+
+Always: ≥50 GB disk, a 2 GB swapfile as OOM insurance, and slice
+quotas (`member.sh --quota-mem/--quota-cpu`) sized so members
+degrade individually instead of taking the box down. Tier 2: 16 GB
+minimum, 32 GB recommended once vm-bench Windows guests enter the
+picture. Tier 3: the 16 GB Pi 5 for anything beyond a single member.
+
 Deliberately skipped: local VMs on Apple Silicon (no x86 guests,
 nested-virt quirks make results unrepresentative — the hourly VPS is
 the cheaper, truer lab) and Fedora/other distros until the

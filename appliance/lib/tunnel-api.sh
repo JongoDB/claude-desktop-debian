@@ -287,6 +287,21 @@ tunnel_api_provision() {
 	local token_file="$3"
 	local allow_csv="$4"
 
+	# Dry-run must never touch the network: print the plan and stop.
+	if [[ ${appliance_dry_run:-0} -eq 1 ]]; then
+		printf 'DRY-RUN: cloudflare api provisioning plan:\n'
+		printf '    verify token from %s\n' "$token_file"
+		printf '    ensure tunnel "claude-appliance" (remote-managed)\n'
+		printf '    ingress: %s -> http://127.0.0.1:%s\n' \
+			"$hostname" "$port"
+		printf '    proxied CNAME %s -> <tunnel>.cfargotunnel.com\n' \
+			"$hostname"
+		printf '    Access app + allow policy (%s)\n' "$allow_csv"
+		printf '    write %s/tunnel.conf; cloudflared service install\n' \
+			"$appliance_etc"
+		return 0
+	fi
+
 	tunnel_api_load_token "$token_file" || return 1
 	local account
 	account=$(cf_account_id) || return 1

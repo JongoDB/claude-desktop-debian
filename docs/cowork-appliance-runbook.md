@@ -5,8 +5,12 @@
 Operational procedures for a running appliance: provision, members, edge, distribution, backup, and recovery. Design: [cowork-appliance-design.md](cowork-appliance-design.md); phase specs: [cowork-appliance-phases.md](cowork-appliance-phases.md).
 
 ```bash
-# The four commands you will actually use:
-sudo appliance/setup.sh --hostname claude.example.com   # provision
+# Dev bootstrap — clone and run; the wizard prompts for anything
+# missing (hostname, API token file, Access allow list):
+git clone https://github.com/aaddrick/claude-desktop-debian
+sudo claude-desktop-debian/appliance/setup.sh
+
+# The three commands you will use after that:
 sudo appliance/member.sh add alice                      # add a member
 appliance/setup.sh doctor                               # health check
 appliance/gen-sshconfigs.sh --host claude.example.com --per-member
