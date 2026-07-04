@@ -5,14 +5,41 @@
 Operational procedures for a running appliance: provision, members, edge, distribution, backup, and recovery. Design: [cowork-appliance-design.md](cowork-appliance-design.md); phase specs: [cowork-appliance-phases.md](cowork-appliance-phases.md).
 
 ```bash
-# The four commands you will actually use:
-sudo appliance/setup.sh --hostname claude.example.com   # provision
+# Dev bootstrap — clone and run; the wizard prompts for anything
+# missing (hostname, API token file, Access allow list):
+git clone https://github.com/aaddrick/claude-desktop-debian
+sudo claude-desktop-debian/appliance/setup.sh
+
+# The three commands you will use after that:
 sudo appliance/member.sh add alice                      # add a member
 appliance/setup.sh doctor                               # health check
 appliance/gen-sshconfigs.sh --host claude.example.com --per-member
 ```
 
 ## Initial provision
+
+### Zero-touch (recommended)
+
+One command from a bare OS, given a scoped Cloudflare API token
+(Account > Cloudflare Tunnel:Edit, Account > Access: Apps and
+Policies:Edit, Zone > DNS:Edit — create it at dash.cloudflare.com >
+My Profile > API Tokens):
+
+```bash
+printf '%s' 'YOUR-API-TOKEN' > /root/cf-token && chmod 600 /root/cf-token
+sudo appliance/setup.sh --hostname claude.example.com \
+	--cf-api-token-file /root/cf-token \
+	--access-allow 'you@example.com'
+```
+
+That provisions everything: engine, session stack, kasmVNC, the
+remotely-managed tunnel, the proxied DNS record, **and the Access
+application with an allow policy** for the emails/domains in
+`--access-allow` (required — a tunneled hostname without an Access
+app is public). Then: open `https://claude.example.com`, pass the
+Access login, sign into Claude, run `appliance/setup.sh doctor`.
+
+### Manual tunnel (no API token)
 
 1. Fresh Debian 12+/Ubuntu 24.04+ box (x86_64 or arm64), DNS name
    picked (e.g. `claude.example.com`), Cloudflare zone for it.
@@ -37,6 +64,10 @@ appliance/gen-sshconfigs.sh --host claude.example.com --per-member
    Claude, let the keyring initialize. Run
    `appliance/setup.sh doctor` and get to zero FAILs.
 
+Test environments for validating all of this (VPS → mini PC → Pi 5)
+are specified in
+[cowork-appliance-phases.md](cowork-appliance-phases.md#test-environments).
+
 ## Member lifecycle
 
 ```bash
@@ -47,15 +78,31 @@ appliance/member.sh list
 
 `add` creates the account, systemd slice quota, kasmVNC session on
 its own display/port, ingress hostname (`alice.claude.example.com`),
-and autostart. Two manual follow-ups per member:
+and autostart. In **zero-touch (api) mode** the member's DNS record
+and Access application are created automatically too, leaving one
+manual follow-up; in manual mode there are two:
 
-1. **Access policy** for the new hostname (Cloudflare dashboard/API).
+1. **Access policy** for the new hostname (manual mode only).
 2. **First login** by the member: sign into their own Claude account;
    the keyring unlocks via PAM at session login from then on.
 
 Sizing guidance: ~1–2 GB per active Cowork member on bwrap, ~4 GB on
 KVM, plus the Electron sessions. Watch `systemd-cgtop` — quotas are
 slices, so a noisy member throttles before starving the box.
+
+## Cloud storage (keep project data off the appliance disk)
+
+```bash
+sudo appliance/storage.sh add --user alice --provider gdrive --name drive
+```
+
+The wizard tells the member to run `rclone authorize "drive"` on
+their laptop and paste the token. Their Drive then appears at
+`~/CloudDrives/drive` with a bounded local cache (default 10G,
+`--cache-max` to change); Cowork/Code project folders are selected
+inside it, exactly like pointing macOS Cowork at a synced Drive
+folder. `storage.sh list --user alice` shows remotes and mount
+health; `remove` detaches without touching provider data.
 
 ## Test bench
 

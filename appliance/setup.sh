@@ -10,8 +10,16 @@
 #   sudo appliance/setup.sh [--engine auto|official|repo]
 #                           [--profile kasmvnc|xrdp|overlay]
 #                           [--user NAME] [--hostname FQDN]
+#                           [--cf-api-token-file FILE]
+#                           [--access-allow EMAIL_OR_DOMAIN[,...]]
 #                           [--dry-run] [--force]
 #   appliance/setup.sh doctor [--user NAME]
+#
+# Zero-touch mode: with --cf-api-token-file (scoped Cloudflare token:
+# Tunnel:Edit, Access Apps:Edit, DNS:Edit) the tunnel, DNS record, and
+# Access policy are provisioned via the API — no interactive
+# `cloudflared tunnel login`. --access-allow is REQUIRED in this mode:
+# a tunneled hostname without an Access app is public.
 #
 # Design: docs/cowork-appliance-design.md
 # Spec:   docs/cowork-appliance-phases.md
@@ -25,6 +33,8 @@ source "$appliance_dir/lib/common.sh"
 source "$appliance_dir/lib/engine.sh"
 # shellcheck source=appliance/lib/doctor.sh
 source "$appliance_dir/lib/doctor.sh"
+# shellcheck source=appliance/lib/tunnel-api.sh
+source "$appliance_dir/lib/tunnel-api.sh"
 # shellcheck source=appliance/lib/profiles/kasmvnc.sh
 source "$appliance_dir/lib/profiles/kasmvnc.sh"
 # shellcheck source=appliance/lib/profiles/xrdp.sh
@@ -33,7 +43,33 @@ source "$appliance_dir/lib/profiles/xrdp.sh"
 source "$appliance_dir/lib/profiles/overlay.sh"
 
 usage() {
-	sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+	sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+# Interactive wizard: fill missing flags from the terminal so the
+# dev bootstrap is just `git clone ... && sudo appliance/setup.sh`.
+# Non-interactive runs (cloud-init, CI pipes) skip the prompts and
+# rely on flags. Reads/writes main()'s locals via dynamic scoping.
+# APPLIANCE_ASSUME_TTY=1 forces the prompts (test seam).
+prompt_missing_flags() {
+	if [[ ${APPLIANCE_ASSUME_TTY:-0} -ne 1 && ! -t 0 ]]; then
+		return 0
+	fi
+	# printf the prompts explicitly: bash suppresses `read -p` output
+	# when stdin is not a terminal, which breaks the test seam.
+	if [[ -z $hostname ]]; then
+		printf 'Public hostname (blank = skip tunnel setup): ' >&2
+		read -r hostname
+	fi
+	if [[ -n $hostname && -z $token_file ]]; then
+		printf 'Cloudflare API token file (blank = manual tunnel): ' \
+			>&2
+		read -r token_file
+	fi
+	if [[ -n $token_file && -z $access_allow ]]; then
+		printf 'Access allow list (emails/domains, comma-sep): ' >&2
+		read -r access_allow
+	fi
 }
 
 install_session_stack() {
@@ -68,6 +104,7 @@ EOF
 
 main() {
 	local engine='auto' profile='kasmvnc' user='' hostname=''
+	local token_file='' access_allow=''
 	local mode='setup'
 	appliance_dry_run=0
 	appliance_force=0
@@ -79,13 +116,15 @@ main() {
 
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
-			--engine)   engine="$2"; shift 2 ;;
-			--profile)  profile="$2"; shift 2 ;;
-			--user)     user="$2"; shift 2 ;;
-			--hostname) hostname="$2"; shift 2 ;;
-			--dry-run)  appliance_dry_run=1; shift ;;
-			--force)    appliance_force=1; shift ;;
-			-h|--help)  usage; return 0 ;;
+			--engine)            engine="$2"; shift 2 ;;
+			--profile)           profile="$2"; shift 2 ;;
+			--user)              user="$2"; shift 2 ;;
+			--hostname)          hostname="$2"; shift 2 ;;
+			--cf-api-token-file) token_file="$2"; shift 2 ;;
+			--access-allow)      access_allow="$2"; shift 2 ;;
+			--dry-run)           appliance_dry_run=1; shift ;;
+			--force)             appliance_force=1; shift ;;
+			-h|--help)           usage; return 0 ;;
 			*)
 				log_err "unknown argument '$1'"
 				usage
@@ -101,6 +140,25 @@ main() {
 			return 1
 			;;
 	esac
+
+	if [[ $mode == 'setup' ]]; then
+		prompt_missing_flags
+	fi
+
+	local tunnel_mode='manual'
+	if [[ -n $token_file ]]; then
+		tunnel_mode='api'
+		if [[ -z $hostname ]]; then
+			log_err '--cf-api-token-file requires --hostname'
+			return 1
+		fi
+		if [[ -z $access_allow ]]; then
+			log_err '--cf-api-token-file requires --access-allow'
+			log_err '  (a tunneled hostname without an Access' \
+				'policy is public)'
+			return 1
+		fi
+	fi
 
 	user=$(resolve_target_user "$user") || return 1
 
@@ -140,7 +198,11 @@ main() {
 		|| return 1
 
 	case "$profile" in
-		kasmvnc) profile_kasmvnc_apply "$user" "$hostname" || return 1 ;;
+		kasmvnc)
+			profile_kasmvnc_apply "$user" "$hostname" \
+				"$tunnel_mode" "$token_file" "$access_allow" \
+				|| return 1
+			;;
 		xrdp)    profile_xrdp_apply "$user" || return 1 ;;
 		overlay)
 			profile_overlay_apply || return 1
@@ -156,7 +218,8 @@ main() {
 	log_info "  - log into the session once as '$user' to create the"
 	log_info '    keyring and sign into Claude'
 	log_info '  - run: appliance/setup.sh doctor'
-	if [[ $profile == 'kasmvnc' && -n $hostname ]]; then
+	if [[ $profile == 'kasmvnc' && -n $hostname \
+		&& $tunnel_mode == 'manual' ]]; then
 		log_info '  - finish the cloudflared tunnel steps printed above'
 	fi
 }

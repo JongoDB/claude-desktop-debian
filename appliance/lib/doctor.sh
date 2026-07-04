@@ -81,6 +81,17 @@ apl_check_public_binds() {
 # $1 = path to cloudflared config.yml (may not exist on overlay profile)
 apl_check_tunnel_config() {
 	local conf="$1"
+	# api mode: ingress lives in Cloudflare's remote config, not a
+	# local file — check the recorded shape instead.
+	if [[ -f $appliance_etc/tunnel.conf ]] \
+		&& grep -qE '^mode=api$' "$appliance_etc/tunnel.conf"; then
+		if grep -qE '^tunnel_id=.+' "$appliance_etc/tunnel.conf"; then
+			_apl_pass 'tunnel: remotely managed (api mode)'
+		else
+			_apl_fail 'tunnel.conf says api mode but has no tunnel_id'
+		fi
+		return
+	fi
 	if [[ ! -f $conf ]]; then
 		_apl_warn "no cloudflared config at $conf (overlay profile?)"
 		return
@@ -111,13 +122,32 @@ apl_check_tunnel_service() {
 
 # --- Session layer -----------------------------------------------------
 
-# $1 = user
+# $1 = user, $2 = optional `ss -Hltn` listing (for tests). A config
+# file is necessary but NOT sufficient — the session only works if the
+# server is actually listening, so a present config with no listener is
+# a FAIL, not a PASS (the cloud-init headless-bus bug shipped exactly
+# that false-green).
 apl_check_session_layer() {
 	local user="$1"
+	local ss_output="${2-$(command -v ss > /dev/null 2>&1 \
+		&& ss -Hltn 2> /dev/null)}"
 	local home
 	home=$(getent passwd "$user" | cut -d: -f6)
+
 	if [[ -f $home/.vnc/kasmvnc.yaml ]]; then
 		_apl_pass "kasmVNC config present for $user"
+		# The port lives in the config; default to the base port.
+		local port
+		port=$(grep -oE 'websocket_port:[[:space:]]*[0-9]+' \
+			"$home/.vnc/kasmvnc.yaml" | grep -oE '[0-9]+' | head -1)
+		port="${port:-8443}"
+		if grep -qE "127\.0\.0\.1:$port|\[::1\]:$port|\*:$port" \
+			<<< "$ss_output"; then
+			_apl_pass "kasmVNC listening on $port"
+		else
+			_apl_fail "kasmVNC config present but nothing is" \
+				"listening on $port (service failed to start?)"
+		fi
 	elif [[ -f /etc/xrdp/xrdp.ini ]]; then
 		_apl_pass 'xrdp profile detected'
 	else
@@ -125,21 +155,27 @@ apl_check_session_layer() {
 	fi
 }
 
-# $1 = user. Non-empty check per the false-green lesson (#692).
+# $1 = user. On a freshly-provisioned appliance the keyring only
+# populates at the member's FIRST Claude sign-in (a documented
+# post-provision step), so an absent-or-empty keyring is a WARN, not a
+# FAIL — provisioning succeeded, the member just hasn't signed in yet.
+# (The #692 empty-store-is-a-false-green concern is about the app's own
+# --doctor on a used install, handled separately in scripts/doctor.sh.)
 apl_check_keyring() {
 	local user="$1"
 	local home
 	home=$(getent passwd "$user" | cut -d: -f6)
 	local ring_dir="$home/.local/share/keyrings"
 	if [[ ! -d $ring_dir ]]; then
-		_apl_warn "no keyring dir for $user yet (first login creates it)"
+		_apl_warn "no keyring for $user yet (created at first sign-in)"
 		return
 	fi
 	if find "$ring_dir" -name '*.keyring' -size +0c 2> /dev/null \
 		| grep -q .; then
 		_apl_pass "keyring present and non-empty for $user"
 	else
-		_apl_fail "keyring dir exists but no non-empty keyring for $user"
+		_apl_warn "keyring not yet populated for $user" \
+			"(completes at the member's first Claude sign-in)"
 	fi
 }
 

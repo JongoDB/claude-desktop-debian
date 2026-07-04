@@ -8,10 +8,16 @@ Flash-and-go bootstrap paths for the Cowork appliance.
 `__HOSTNAME__` and `__ADMIN_KEY__`, feed it to your provider
 (DigitalOcean/Hetzner user-data field, Ubuntu autoinstall, Proxmox
 cloud-init drive). It creates the first member (`cowork`), clones
-this repo to `/opt/claude-appliance`, and runs `setup.sh`. The
-interactive credential steps (tunnel login, Access policy, Claude
-sign-in) are listed in the box's `/etc/motd` and stay manual on
-purpose — no secrets in user-data.
+this repo to `/opt/claude-appliance`, and runs `setup.sh`. By
+default the credential steps (tunnel login, Access policy, Claude
+sign-in) are listed in the box's `/etc/motd` and stay manual — no
+secrets in user-data.
+
+For a genuinely one-shot bring-up, SSH in once after boot and run
+the zero-touch flow instead (token file + `--access-allow`; see the
+[runbook](../../docs/cowork-appliance-runbook.md#zero-touch-recommended)).
+Putting the API token itself into user-data works too, but treat
+user-data as semi-sensitive at your provider before you do.
 
 Engine note: most VPSes have no nested virtualization, so engine
 auto-selection lands on this repo's build with the bwrap Cowork

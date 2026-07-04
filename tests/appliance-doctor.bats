@@ -163,14 +163,16 @@ EOF
 	[[ $output != *'FAIL'* ]]
 }
 
-@test "keyring: dir with only an empty keyring file fails" {
+@test "keyring: empty keyring pre-sign-in is a WARN, not a fail" {
 	getent() {
 		printf 'alice:x:1000:1000::%s:/bin/bash\n' "$TEST_TMP/home"
 	}
 	mkdir -p "$TEST_TMP/home/.local/share/keyrings"
 	touch "$TEST_TMP/home/.local/share/keyrings/login.keyring"
+	run apl_check_keyring alice
+	[[ $output == *'WARN'* ]]
 	apl_check_keyring alice
-	[[ $_apl_failures -eq 1 ]]
+	[[ $_apl_failures -eq 0 ]]
 }
 
 @test "keyring: non-empty keyring passes" {
@@ -225,4 +227,43 @@ EOF
 	}
 	run run_appliance_doctor alice
 	[[ $status -eq 0 ]]
+}
+
+# =============================================================================
+# apl_check_session_layer: config present must also mean a live listener
+# =============================================================================
+
+@test "session_layer: kasmvnc config + listener = two passes" {
+	getent() {
+		printf 'alice:x:1042:1042::%s:/bin/bash\n' "$TEST_TMP/home"
+	}
+	mkdir -p "$TEST_TMP/home/.vnc"
+	printf 'network:\n  websocket_port: 8443\n' \
+		> "$TEST_TMP/home/.vnc/kasmvnc.yaml"
+	local ss='LISTEN 0 128 127.0.0.1:8443 0.0.0.0:*'
+	apl_check_session_layer alice "$ss"
+	[[ $_apl_failures -eq 0 ]]
+}
+
+@test "session_layer: config present but NO listener is a FAIL (#false-green)" {
+	getent() {
+		printf 'alice:x:1042:1042::%s:/bin/bash\n' "$TEST_TMP/home"
+	}
+	mkdir -p "$TEST_TMP/home/.vnc"
+	printf 'network:\n  websocket_port: 8443\n' \
+		> "$TEST_TMP/home/.vnc/kasmvnc.yaml"
+	local ss='LISTEN 0 128 127.0.0.1:22 0.0.0.0:*'
+	run apl_check_session_layer alice "$ss"
+	[[ $output == *'nothing is'* ]]
+	apl_check_session_layer alice "$ss"
+	[[ $_apl_failures -eq 1 ]]
+}
+
+@test "session_layer: no config at all is a FAIL" {
+	getent() {
+		printf 'alice:x:1042:1042::%s:/bin/bash\n' "$TEST_TMP/home"
+	}
+	mkdir -p "$TEST_TMP/home"
+	apl_check_session_layer alice ''
+	[[ $_apl_failures -eq 1 ]]
 }

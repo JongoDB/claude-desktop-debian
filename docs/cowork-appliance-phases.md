@@ -58,6 +58,49 @@ tests/
 - **No secrets in the repo or in argv**: tunnel tokens and IdP settings are
   read from files or env, never flags (flags leak via `ps`).
 
+## Test environments
+
+Three tiers, brought up **in this order**. Each tier is a bare-OS →
+one-command provisioning test first, and a feature-validation target
+second; re-provisioning from scratch (snapshot revert or reimage) is
+part of every test pass.
+
+| Tier | Hardware | OS | Engine exercised | Validates |
+|---|---|---|---|---|
+| 1 | x86 VPS (Hetzner CPX11/CX22, DO droplet; hourly billing) | Ubuntu Server 24.04 | repo build + **bwrap** (no `/dev/kvm` on cheap VPSes) | cloud-init one-shot, zero-touch tunnel from a real datacenter, Access SSO, kasmVNC in iPad Safari over cellular, doctor, member add/remove |
+| 2 | Intel N100/N150 mini PC, 32 GB RAM | Ubuntu Server 24.04 | **official apt build + KVM** (only tier with `/dev/kvm`) | official-engine Cowork, multi-member concurrency under slice quotas, vm-bench with a licensed Windows guest; graduates to production |
+| 3 | Raspberry Pi 5 16 GB, NVMe/USB3 SSD | Raspberry Pi OS **Lite** (Bookworm, arm64) | repo build arm64 + bwrap | arm64 deb path, XFCE-install-on-bare-Lite, kasmVNC without a hardware encoder, pi-gen recipe |
+
+### Sizing (bwrap engine; budget per *concurrently active* member)
+
+Rule of thumb per active member: Electron ~1–1.5 GB + XFCE/kasmVNC
+~1 GB + a Cowork bwrap session ~0.5–1.5 GB ≈ **2.5–3.5 GB RAM and
+~1.5 vCPU**, plus ~1 GB for the OS. Idle signed-in members
+(close-to-tray) cost a fraction of that. KVM-engine Cowork adds a
+guest VM: budget ~4 GB per active member instead.
+
+| Concurrent members | Tier 1 VPS (DO Basic / Hetzner) | Notes |
+|---|---|---|
+| 1 | 2 vCPU / 4 GB (DO $24; Hetzner CPX21) | comfortable solo |
+| 2 | 4 vCPU / 8 GB (DO $48; Hetzner CPX31) | resize up when the second seat becomes real — CPU/RAM resizes are reversible |
+| 3–4 | 8 vCPU / 16 GB | consider the Tier 2 mini PC instead at this point |
+
+Always: ≥50 GB disk, a 2 GB swapfile as OOM insurance, and slice
+quotas (`member.sh --quota-mem/--quota-cpu`) sized so members
+degrade individually instead of taking the box down. Tier 2: 16 GB
+minimum, 32 GB recommended once vm-bench Windows guests enter the
+picture. Tier 3: the 16 GB Pi 5 for anything beyond a single member.
+
+Deliberately skipped: local VMs on Apple Silicon (no x86 guests,
+nested-virt quirks make results unrepresentative — the hourly VPS is
+the cheaper, truer lab) and Fedora/other distros until the
+Debian-family path is solid.
+
+Per-tier recipe: provision bare OS → run `appliance/setup.sh` (or
+feed `appliance/images/cloud-init.yaml`) → `appliance/setup.sh
+doctor` to zero FAILs → work the phase's hardware-verify checklist →
+destroy and re-provision to prove repeatability.
+
 ---
 
 ## Phase 1 — single-user headless appliance
@@ -125,6 +168,65 @@ appliance/setup.sh doctor        # alias for the doctor entry point
 
 ---
 
+## Phase 1.5 — zero-touch tunnel (implemented)
+
+**Goal**: bare OS to working, Access-protected URL in one command —
+no interactive `cloudflared tunnel login`.
+
+### Interface
+
+```bash
+sudo appliance/setup.sh --hostname claude.example.com \
+	--cf-api-token-file /root/cf-token \
+	--access-allow 'alice@example.com,example.com'
+```
+
+The token is a scoped Cloudflare API token (Account > Cloudflare
+Tunnel:Edit, Account > Access: Apps and Policies:Edit, Zone >
+DNS:Edit), read from a file, never argv. `--access-allow` (emails
+and/or email domains) is **required** in this mode: a proxied tunnel
+hostname without an Access application is public.
+
+### Behavior (`lib/tunnel-api.sh`)
+
+1. Verify the token; discover the account and the registered zone by
+   walking the hostname's labels.
+2. Create-or-adopt a remotely-managed tunnel named
+   `claude-appliance` (`config_src: cloudflare` — ingress lives in
+   Cloudflare's config, not a local YAML).
+3. PUT the ingress (hostname → local kasmVNC port, 404 catch-all),
+   idempotently.
+4. Ensure the proxied CNAME to `<tunnel>.cfargotunnel.com`.
+5. Ensure the Access application + allow policy for the hostname.
+6. Record the shape in `$APPLIANCE_ETC/tunnel.conf` (`mode=api`,
+   tunnel/account/zone ids, token file path, allow list) and install
+   the connector via `cloudflared service install <tunnel token>`.
+
+`member.sh` reads `tunnel.conf`: in api mode, member add/remove
+updates the remote ingress, the member's CNAME, and a per-member
+Access app through the API instead of editing
+`/etc/cloudflared/config.yml`. The doctor recognizes api mode and
+checks the recorded tunnel id instead of the local YAML.
+
+### Acceptance criteria (all BATS-covered)
+
+- Pure JSON transforms (`ingress_json_add/remove`,
+  `access_include_json`) are idempotent and surgical.
+- `cf_tunnel_ensure` adopts an existing tunnel without a POST.
+- Full provisioning happy path against a stubbed API writes a
+  complete `tunnel.conf` and installs the connector with the tunnel
+  token.
+- api-mode without `--access-allow` or `--hostname` is refused.
+- member add in api mode routes to the API, not the local file.
+
+### Hardware-verify checklist
+
+- [ ] Real token → `setup.sh` one-shot → hostname reachable, Access
+      login page presented, kasmVNC session behind it (Tier 1 VPS)
+- [ ] `member.sh add` in api mode creates working member hostname
+
+---
+
 ## Phase 2 — multi-user member management
 
 **Goal**: add/remove team members with real isolation and quotas.
@@ -168,6 +270,59 @@ appliance/member.sh list
 - [ ] Two concurrent members in real kasmVNC sessions, each signed into
       their own Claude account, quotas visible in `systemd-cgtop`
 - [ ] Keyring unlock at session start (no safeStorage degradation)
+
+---
+
+## Phase 2.5 — remote-backed storage (implemented)
+
+**Goal**: project data lives in the member's cloud storage, not on
+the appliance disk — the macOS pattern (Cowork folders that *are*
+Google Drive folders) with a bounded local cache instead of a full
+sync, so a small VPS disk serves large accounts.
+
+### Interface
+
+```bash
+sudo appliance/storage.sh add --user alice --provider gdrive \
+	--name drive [--token-file FILE] [--cache-max 10G]
+sudo appliance/storage.sh remove --user alice --name drive
+appliance/storage.sh list --user alice
+```
+
+Providers: `gdrive`, `onedrive`, `dropbox` (anything else via raw
+rclone). OAuth is a one-time paste: the member runs
+`rclone authorize "<backend>"` on any machine with a browser and
+pastes the token JSON at the wizard prompt (or via `--token-file`).
+The token lands in the member's own `~/.config/rclone/rclone.conf`,
+passed through env, never argv.
+
+### Behavior
+
+- `rclone mount` per remote as a systemd **user** unit
+  (`rclone-<name>.service`), mounted at `~/CloudDrives/<name>` with
+  `--vfs-cache-mode full`, `--vfs-cache-max-size` (default 10G),
+  24 h cache age, `--umask 077`. Near-local read/write semantics;
+  disk usage capped at the cache bound.
+- Members point Cowork/Code project folders inside the mount. The
+  Cowork daemon's bind of paths under `$HOME` carries the FUSE
+  mount into the bwrap sandbox unchanged.
+- `remove` detaches the mount and deletes the remote config; the
+  provider-side data is untouched.
+
+### Acceptance criteria (BATS, stubbed rclone/systemd)
+
+- Provider mapping validates; unknown providers are refused.
+- The unit file wires the bounded cache, umask, and lazy unmount.
+- Token intake works from file and interactive paste, and fails
+  cleanly with neither.
+- Dry-run plans everything and writes nothing.
+
+### Hardware-verify checklist
+
+- [ ] Google Drive mount on the Tier 1 VPS; a Cowork session driving
+      a project folder inside it end-to-end (bwrap bind over FUSE)
+- [ ] Cache stays under `--cache-max` during a large-repo session
+- [ ] OneDrive variant
 
 ---
 
@@ -268,6 +423,22 @@ installable per member, usable from Cowork/Code sessions.
   yamllint-level check in CI).
 
 ---
+
+## Spin-out — the `coworkstation` repo (decided, gated on Tier 1)
+
+Once the Tier 1 VPS hardware-verify passes, the appliance layer
+moves to a new repository named **coworkstation** under the owner's
+account, with fresh history. What carries over: `appliance/`, the
+three appliance docs (design, phases, runbook), `tests/appliance-*`
++ `tests/helpers/`, and `appliance-tests.yml`. What does not: the
+patch suite, packaging, and launcher — the new repo **consumes
+engines instead of forking them** (Anthropic's apt build where KVM
+exists; `claude-desktop-debian` releases for the bwrap path).
+
+Bootstrap contract for the new repo: dev = clone + `sudo
+./setup.sh` (wizard); prod = a versioned setup script (later a
+binary) downloadable from a release URL. This fork then reverts to
+tracking upstream `aaddrick/claude-desktop-debian` only.
 
 ## Phase 6 — deferred R&D (tracking only)
 

@@ -25,6 +25,8 @@ source "$appliance_dir/lib/common.sh"
 source "$appliance_dir/lib/engine.sh"
 # shellcheck source=appliance/lib/profiles/kasmvnc.sh
 source "$appliance_dir/lib/profiles/kasmvnc.sh"
+# shellcheck source=appliance/lib/tunnel-api.sh
+source "$appliance_dir/lib/tunnel-api.sh"
 
 registry_file() { printf '%s/members.tsv' "$appliance_etc"; }
 
@@ -205,8 +207,18 @@ cmd_add() {
 	local base member_host=''
 	if base=$(appliance_base_hostname) && [[ -n $base ]]; then
 		member_host="$name.$base"
-		apply_ingress_transform ingress_add "$member_host" "$port" \
-			|| return 1
+		if [[ $(tunnel_conf_get mode 2> /dev/null) == 'api' ]]; then
+			if [[ ${appliance_dry_run:-0} -eq 1 ]]; then
+				printf 'DRY-RUN: api ingress+dns+access for %s\n' \
+					"$member_host"
+			else
+				tunnel_api_member_add "$member_host" "$port" \
+					|| return 1
+			fi
+		else
+			apply_ingress_transform ingress_add "$member_host" \
+				"$port" || return 1
+		fi
 	else
 		log_warn 'no appliance hostname recorded; skipping ingress'
 	fi
@@ -243,7 +255,17 @@ cmd_remove() {
 
 	local base
 	if base=$(appliance_base_hostname) && [[ -n $base ]]; then
-		apply_ingress_transform ingress_remove "$name.$base" || return 1
+		if [[ $(tunnel_conf_get mode 2> /dev/null) == 'api' ]]; then
+			if [[ ${appliance_dry_run:-0} -eq 1 ]]; then
+				printf 'DRY-RUN: api ingress+dns+access removal for %s\n' \
+					"$name.$base"
+			else
+				tunnel_api_member_remove "$name.$base" || return 1
+			fi
+		else
+			apply_ingress_transform ingress_remove "$name.$base" \
+				|| return 1
+		fi
 	fi
 
 	local uid
