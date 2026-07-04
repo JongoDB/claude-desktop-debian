@@ -38,7 +38,7 @@ usage() {
 
 install_session_stack() {
 	pkg_install xfce4 xfce4-terminal dbus-x11 \
-		gnome-keyring libsecret-1-0
+		gnome-keyring libsecret-1-0 libpam-gnome-keyring
 }
 
 # XDG autostart so Claude Desktop launches with the session; upstream
@@ -132,6 +132,13 @@ main() {
 	install_session_stack || return 1
 	install_engine "$user" || return 1
 
+	# Record the deployment shape for member.sh and the doctor.
+	{
+		printf 'profile=%s\n' "$profile"
+		printf 'hostname=%s\n' "$hostname"
+	} | appliance_force=1 write_file "$appliance_etc/appliance.conf" \
+		|| return 1
+
 	case "$profile" in
 		kasmvnc) profile_kasmvnc_apply "$user" "$hostname" || return 1 ;;
 		xrdp)    profile_xrdp_apply "$user" || return 1 ;;
@@ -154,4 +161,7 @@ main() {
 	fi
 }
 
-main "$@"
+# Only run when executed, so the BATS suite can source the functions.
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+	main "$@"
+fi

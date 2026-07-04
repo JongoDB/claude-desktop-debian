@@ -86,15 +86,17 @@ EOF
 
 # systemd user service so the session survives logout and starts at
 # boot (paired with loginctl enable-linger).
-# $1 = user
+# $1 = user, $2 = X display number (unique per member on the host)
 profile_kasmvnc_write_service() {
 	local user="$1"
+	local display="${2:-1}"
 	local home
 	home=$(user_home "$user") || return 1
 	local unit_dir="$home/.config/systemd/user"
 
 	run_as_user "$user" mkdir -p "$unit_dir" || return 1
-	kasmvnc_unit | write_file "$unit_dir/kasmvnc.service" || return 1
+	kasmvnc_unit "$display" \
+		| write_file "$unit_dir/kasmvnc.service" || return 1
 	if [[ ${appliance_dry_run:-0} -ne 1 ]]; then
 		chown "$user:$user" "$unit_dir/kasmvnc.service"
 	fi
@@ -104,15 +106,16 @@ profile_kasmvnc_write_service() {
 }
 
 kasmvnc_unit() {
-	cat << 'EOF'
+	local display="${1:-1}"
+	cat << EOF
 [Unit]
 Description=kasmVNC session (Claude appliance)
 After=network.target
 
 [Service]
 Type=forking
-ExecStart=/usr/bin/vncserver :1 -select-de manual
-ExecStop=/usr/bin/vncserver -kill :1
+ExecStart=/usr/bin/vncserver :${display} -select-de manual
+ExecStop=/usr/bin/vncserver -kill :${display}
 Restart=on-failure
 RestartSec=5
 
