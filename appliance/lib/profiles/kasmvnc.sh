@@ -124,33 +124,41 @@ WantedBy=default.target
 EOF
 }
 
-# cloudflared: Cloudflare's apt repo + a config skeleton the operator
-# finishes after the interactive `cloudflared tunnel login`.
+# cloudflared package from Cloudflare's apt repo (shared by the
+# manual and api tunnel modes).
+profile_kasmvnc_install_cloudflared() {
+	local keyring='/usr/share/keyrings/cloudflare-main.gpg'
+	local list='/etc/apt/sources.list.d/cloudflared.list'
+
+	if command -v cloudflared > /dev/null 2>&1; then
+		return 0
+	fi
+	if [[ ! -f $keyring ]]; then
+		if [[ ${appliance_dry_run:-0} -eq 1 ]]; then
+			printf 'DRY-RUN: install cloudflare apt key -> %s\n' \
+				"$keyring"
+		else
+			curl -fsSL \
+				https://pkg.cloudflare.com/cloudflare-main.gpg \
+				-o "$keyring" || return 1
+		fi
+	fi
+	printf 'deb [signed-by=%s] %s %s main' "$keyring" \
+		'https://pkg.cloudflare.com/cloudflared' \
+		"$(appliance_distro_codename)" | write_file "$list" \
+		|| return 1
+	run_cmd apt-get update || return 1
+	pkg_install cloudflared
+}
+
+# Manual tunnel mode: config skeleton the operator finishes after the
+# interactive `cloudflared tunnel login`.
 # $1 = public hostname, $2 = local websocket port
 profile_kasmvnc_setup_tunnel() {
 	local hostname="$1"
 	local port="$2"
-	local keyring='/usr/share/keyrings/cloudflare-main.gpg'
-	local list='/etc/apt/sources.list.d/cloudflared.list'
 
-	if ! command -v cloudflared > /dev/null 2>&1; then
-		if [[ ! -f $keyring ]]; then
-			if [[ ${appliance_dry_run:-0} -eq 1 ]]; then
-				printf 'DRY-RUN: install cloudflare apt key -> %s\n' \
-					"$keyring"
-			else
-				curl -fsSL \
-					https://pkg.cloudflare.com/cloudflare-main.gpg \
-					-o "$keyring" || return 1
-			fi
-		fi
-		printf 'deb [signed-by=%s] %s %s main' "$keyring" \
-			'https://pkg.cloudflare.com/cloudflared' \
-			"$(appliance_distro_codename)" | write_file "$list" \
-			|| return 1
-		run_cmd apt-get update || return 1
-		pkg_install cloudflared || return 1
-	fi
+	profile_kasmvnc_install_cloudflared || return 1
 
 	cloudflared_config "$hostname" "$port" \
 		| write_file /etc/cloudflared/config.yml || return 1
@@ -182,18 +190,29 @@ EOF
 }
 
 # Full profile: packages, per-user config, service, tunnel.
-# $1 = user, $2 = public hostname
+# $1 = user, $2 = public hostname,
+# $3 = tunnel mode: manual (default) | api,
+# $4 = token file (api mode), $5 = Access allow csv (api mode)
 profile_kasmvnc_apply() {
 	local user="$1"
 	local hostname="$2"
+	local tunnel_mode="${3:-manual}"
+	local token_file="${4:-}"
+	local allow_csv="${5:-}"
 	local port="$appliance_kasm_base_port"
 
 	profile_kasmvnc_install_packages || return 1
 	profile_kasmvnc_write_config "$user" "$port" || return 1
 	profile_kasmvnc_write_service "$user" || return 1
-	if [[ -n $hostname ]]; then
-		profile_kasmvnc_setup_tunnel "$hostname" "$port" || return 1
-	else
+	if [[ -z $hostname ]]; then
 		log_warn 'no --hostname given: skipping cloudflared setup'
+		return 0
+	fi
+	if [[ $tunnel_mode == 'api' ]]; then
+		profile_kasmvnc_install_cloudflared || return 1
+		tunnel_api_provision "$hostname" "$port" \
+			"$token_file" "$allow_csv"
+	else
+		profile_kasmvnc_setup_tunnel "$hostname" "$port"
 	fi
 }

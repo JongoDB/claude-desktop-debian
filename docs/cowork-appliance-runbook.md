@@ -14,6 +14,29 @@ appliance/gen-sshconfigs.sh --host claude.example.com --per-member
 
 ## Initial provision
 
+### Zero-touch (recommended)
+
+One command from a bare OS, given a scoped Cloudflare API token
+(Account > Cloudflare Tunnel:Edit, Account > Access: Apps and
+Policies:Edit, Zone > DNS:Edit — create it at dash.cloudflare.com >
+My Profile > API Tokens):
+
+```bash
+printf '%s' 'YOUR-API-TOKEN' > /root/cf-token && chmod 600 /root/cf-token
+sudo appliance/setup.sh --hostname claude.example.com \
+	--cf-api-token-file /root/cf-token \
+	--access-allow 'you@example.com'
+```
+
+That provisions everything: engine, session stack, kasmVNC, the
+remotely-managed tunnel, the proxied DNS record, **and the Access
+application with an allow policy** for the emails/domains in
+`--access-allow` (required — a tunneled hostname without an Access
+app is public). Then: open `https://claude.example.com`, pass the
+Access login, sign into Claude, run `appliance/setup.sh doctor`.
+
+### Manual tunnel (no API token)
+
 1. Fresh Debian 12+/Ubuntu 24.04+ box (x86_64 or arm64), DNS name
    picked (e.g. `claude.example.com`), Cloudflare zone for it.
 2. `sudo appliance/setup.sh --hostname claude.example.com`
@@ -37,6 +60,10 @@ appliance/gen-sshconfigs.sh --host claude.example.com --per-member
    Claude, let the keyring initialize. Run
    `appliance/setup.sh doctor` and get to zero FAILs.
 
+Test environments for validating all of this (VPS → mini PC → Pi 5)
+are specified in
+[cowork-appliance-phases.md](cowork-appliance-phases.md#test-environments).
+
 ## Member lifecycle
 
 ```bash
@@ -47,9 +74,11 @@ appliance/member.sh list
 
 `add` creates the account, systemd slice quota, kasmVNC session on
 its own display/port, ingress hostname (`alice.claude.example.com`),
-and autostart. Two manual follow-ups per member:
+and autostart. In **zero-touch (api) mode** the member's DNS record
+and Access application are created automatically too, leaving one
+manual follow-up; in manual mode there are two:
 
-1. **Access policy** for the new hostname (Cloudflare dashboard/API).
+1. **Access policy** for the new hostname (manual mode only).
 2. **First login** by the member: sign into their own Claude account;
    the keyring unlocks via PAM at session login from then on.
 

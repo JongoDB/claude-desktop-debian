@@ -58,6 +58,29 @@ tests/
 - **No secrets in the repo or in argv**: tunnel tokens and IdP settings are
   read from files or env, never flags (flags leak via `ps`).
 
+## Test environments
+
+Three tiers, brought up **in this order**. Each tier is a bare-OS →
+one-command provisioning test first, and a feature-validation target
+second; re-provisioning from scratch (snapshot revert or reimage) is
+part of every test pass.
+
+| Tier | Hardware | OS | Engine exercised | Validates |
+|---|---|---|---|---|
+| 1 | x86 VPS (Hetzner CPX11/CX22, DO droplet; hourly billing) | Ubuntu Server 24.04 | repo build + **bwrap** (no `/dev/kvm` on cheap VPSes) | cloud-init one-shot, zero-touch tunnel from a real datacenter, Access SSO, kasmVNC in iPad Safari over cellular, doctor, member add/remove |
+| 2 | Intel N100/N150 mini PC, 32 GB RAM | Ubuntu Server 24.04 | **official apt build + KVM** (only tier with `/dev/kvm`) | official-engine Cowork, multi-member concurrency under slice quotas, vm-bench with a licensed Windows guest; graduates to production |
+| 3 | Raspberry Pi 5 16 GB, NVMe/USB3 SSD | Raspberry Pi OS **Lite** (Bookworm, arm64) | repo build arm64 + bwrap | arm64 deb path, XFCE-install-on-bare-Lite, kasmVNC without a hardware encoder, pi-gen recipe |
+
+Deliberately skipped: local VMs on Apple Silicon (no x86 guests,
+nested-virt quirks make results unrepresentative — the hourly VPS is
+the cheaper, truer lab) and Fedora/other distros until the
+Debian-family path is solid.
+
+Per-tier recipe: provision bare OS → run `appliance/setup.sh` (or
+feed `appliance/images/cloud-init.yaml`) → `appliance/setup.sh
+doctor` to zero FAILs → work the phase's hardware-verify checklist →
+destroy and re-provision to prove repeatability.
+
 ---
 
 ## Phase 1 — single-user headless appliance
@@ -122,6 +145,65 @@ appliance/setup.sh doctor        # alias for the doctor entry point
 - [ ] Real kasmVNC session reachable through a real cloudflared tunnel
 - [ ] Claude Desktop signs in and Cowork starts under the chosen engine
 - [ ] xrdp profile renders (GPU-compositing fix path)
+
+---
+
+## Phase 1.5 — zero-touch tunnel (implemented)
+
+**Goal**: bare OS to working, Access-protected URL in one command —
+no interactive `cloudflared tunnel login`.
+
+### Interface
+
+```bash
+sudo appliance/setup.sh --hostname claude.example.com \
+	--cf-api-token-file /root/cf-token \
+	--access-allow 'alice@example.com,example.com'
+```
+
+The token is a scoped Cloudflare API token (Account > Cloudflare
+Tunnel:Edit, Account > Access: Apps and Policies:Edit, Zone >
+DNS:Edit), read from a file, never argv. `--access-allow` (emails
+and/or email domains) is **required** in this mode: a proxied tunnel
+hostname without an Access application is public.
+
+### Behavior (`lib/tunnel-api.sh`)
+
+1. Verify the token; discover the account and the registered zone by
+   walking the hostname's labels.
+2. Create-or-adopt a remotely-managed tunnel named
+   `claude-appliance` (`config_src: cloudflare` — ingress lives in
+   Cloudflare's config, not a local YAML).
+3. PUT the ingress (hostname → local kasmVNC port, 404 catch-all),
+   idempotently.
+4. Ensure the proxied CNAME to `<tunnel>.cfargotunnel.com`.
+5. Ensure the Access application + allow policy for the hostname.
+6. Record the shape in `$APPLIANCE_ETC/tunnel.conf` (`mode=api`,
+   tunnel/account/zone ids, token file path, allow list) and install
+   the connector via `cloudflared service install <tunnel token>`.
+
+`member.sh` reads `tunnel.conf`: in api mode, member add/remove
+updates the remote ingress, the member's CNAME, and a per-member
+Access app through the API instead of editing
+`/etc/cloudflared/config.yml`. The doctor recognizes api mode and
+checks the recorded tunnel id instead of the local YAML.
+
+### Acceptance criteria (all BATS-covered)
+
+- Pure JSON transforms (`ingress_json_add/remove`,
+  `access_include_json`) are idempotent and surgical.
+- `cf_tunnel_ensure` adopts an existing tunnel without a POST.
+- Full provisioning happy path against a stubbed API writes a
+  complete `tunnel.conf` and installs the connector with the tunnel
+  token.
+- api-mode without `--access-allow` or `--hostname` is refused.
+- member add in api mode routes to the API, not the local file.
+
+### Hardware-verify checklist
+
+- [ ] Real token → `setup.sh` one-shot → hostname reachable, Access
+      login page presented, kasmVNC session behind it (Tier 1 VPS)
+- [ ] `member.sh add` in api mode creates working member hostname
 
 ---
 

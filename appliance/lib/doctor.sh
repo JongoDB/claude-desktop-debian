@@ -81,6 +81,17 @@ apl_check_public_binds() {
 # $1 = path to cloudflared config.yml (may not exist on overlay profile)
 apl_check_tunnel_config() {
 	local conf="$1"
+	# api mode: ingress lives in Cloudflare's remote config, not a
+	# local file — check the recorded shape instead.
+	if [[ -f $appliance_etc/tunnel.conf ]] \
+		&& grep -qE '^mode=api$' "$appliance_etc/tunnel.conf"; then
+		if grep -qE '^tunnel_id=.+' "$appliance_etc/tunnel.conf"; then
+			_apl_pass 'tunnel: remotely managed (api mode)'
+		else
+			_apl_fail 'tunnel.conf says api mode but has no tunnel_id'
+		fi
+		return
+	fi
 	if [[ ! -f $conf ]]; then
 		_apl_warn "no cloudflared config at $conf (overlay profile?)"
 		return
