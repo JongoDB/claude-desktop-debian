@@ -5,7 +5,10 @@
       "mcp__Claude_Code_Remote__delete_trigger",
       "mcp__Claude_Code_Remote__add_repo",
       "mcp__Claude_Code_Remote__register_repo_root",
-      "Workflow(deep-research)"
+      "Workflow(deep-research)",
+      "Bash(mkdir -p ~/.claude)",
+      "Bash(rm -f ~/.ssh/cm-cws*)",
+      "Bash(ssh -o ConnectTimeout=10 cws-box 'echo BACK')"
     ]
   },
   "hooks": {
